@@ -2,5 +2,3 @@ Flask
 python-telegram-bot
 pandas
 requests
-gunicorn>=20.0.0
-
