@@ -1,3 +1,5 @@
+# zones.py
+
 import re
 import requests
 import pandas as pd
@@ -5,7 +7,6 @@ from io import StringIO
 from config import ZONES_CSV_URL
 
 def normalize_sheet_url(url: str) -> str:
-    """Преобразование Google Sheets URL в прямой CSV."""
     if 'output=csv' in url or '/export' in url or url.endswith('.csv'):
         return url
     m = re.search(r'/d/e/([\w-]+)/', url)
@@ -21,8 +22,8 @@ def normalize_sheet_url(url: str) -> str:
 
 def load_zones():
     """
-    Читает ZONES_CSV_URL и возвращает пять словарей:
-      vis_map[uid]  = 'RK'/'UG'/'All'
+    Возвращает пять словарей:
+      vis_map[uid]  = 'All'/'RU'/'RK'
       bz[uid]       = филиал
       rz[uid]       = РЭС
       names[uid]    = ФИО
