@@ -1,5 +1,3 @@
-# zones.py
-
 import re
 import requests
 import pandas as pd
@@ -7,7 +5,7 @@ from io import StringIO
 from config import ZONES_CSV_URL
 
 def normalize_sheet_url(url: str) -> str:
-    """Преобразует GDocs-URL в прямую CSV-ссылку."""
+    """Преобразование Google Sheets URL в прямой CSV."""
     if 'output=csv' in url or '/export' in url or url.endswith('.csv'):
         return url
     m = re.search(r'/d/e/([\w-]+)/', url)
@@ -40,10 +38,10 @@ def load_zones():
             uid = int(row[3])
         except:
             continue
-        vis_map[uid] = str(row[0]).strip()
-        bz[uid]      = str(row[1]).strip()
-        rz[uid]      = str(row[2]).strip()
-        names[uid]   = str(row[4]).strip()
+        vis_map[uid]  = str(row[0]).strip()
+        bz[uid]       = str(row[1]).strip()
+        rz[uid]       = str(row[2]).strip()
+        names[uid]    = str(row[4]).strip()
         val = row[5]
         resp_map[uid] = "" if pd.isna(val) else str(val).strip()
     return vis_map, bz, rz, names, resp_map
