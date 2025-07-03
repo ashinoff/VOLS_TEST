@@ -1,8 +1,9 @@
-# config.py
 import os
 
 TOKEN         = os.getenv("TOKEN")
 SELF_URL      = os.getenv("SELF_URL", "").rstrip('/')
+PORT          = int(os.getenv("PORT", 5000))
+
 ZONES_CSV_URL = os.getenv("ZONES_CSV_URL", "").strip()
 
 BRANCH_URLS = {
@@ -18,4 +19,3 @@ BRANCH_URLS = {
     "Армавирские ЭС":    os.getenv("ARMAVIR_ES_URL", ""),
     "Адыгейские ЭС":     os.getenv("ADYGEA_ES_URL", ""),
 }
-BRANCHES = list(BRANCH_URLS.keys())
