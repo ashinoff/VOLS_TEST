@@ -2,12 +2,12 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler
 from config import VISIBILITY_GROUPS
 
-# ID админов
+# Задайте реальные ID администраторов
 ADMINS = {955536270, 987654321}
 
-# клавиатура выбора RK/RU
+# Клавиатура выбора группы видимости
 kb_visibility = ReplyKeyboardMarkup(
-    [[k] for k in VISIBILITY_GROUPS.keys()],
+    [[name] for name in VISIBILITY_GROUPS.keys()],
     resize_keyboard=True
 )
 
