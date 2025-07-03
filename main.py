@@ -2,7 +2,7 @@
 import threading
 from flask import Flask
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 import re
 import requests
 import pandas as pd
@@ -23,6 +23,11 @@ kb_back = ReplyKeyboardMarkup([["Назад"]], resize_keyboard=True)
 def kb_branches(branches):
     btns = [[b] for b in branches] + [["Назад"]]
     return ReplyKeyboardMarkup(btns, resize_keyboard=True)
+# После поиска: уведомление, новый поиск, назад
+kb_post_search = ReplyKeyboardMarkup(
+    [["🔔 Отправить уведомление ответственному"], ["Новый поиск"], ["Назад"]],
+    resize_keyboard=True
+)
 
 # === Хендлеры ===
 async def start_line(update: Update, context):
@@ -34,9 +39,9 @@ async def start_line(update: Update, context):
     # Сброс состояния
     context.user_data.clear()
     context.user_data["step"] = "INIT"
-    context.user_data["res"] = rz[uid]
+    context.user_data["res"]  = rz[uid]
     context.user_data["name"] = names[uid]
-    # Приветствие и главное меню
+    # Приветствие и меню
     await update.message.reply_text(
         f"Привет, {names[uid]}! Выберите опцию:",
         reply_markup=kb_initial
@@ -52,10 +57,10 @@ async def handle_text(update: Update, context):
 
     step = context.user_data.get("step", "INIT")
 
-    # --- «Назад» ---
+    # --- Обработка «НАЗАД» ---
     if text == "Назад":
-        if step in ("AWAIT_TP_INPUT", "DISAMBIGUOUS"):
-            # возвращаем выбор филиала
+        if step in ("AWAIT_TP_INPUT", "DISAMBIGUOUS", "SEARCH_DONE"):
+            # возвращаемся к выбору филиала
             context.user_data["step"] = "NETWORK_SELECTED"
             vis = context.user_data["visibility"]
             await update.message.reply_text(
@@ -63,12 +68,9 @@ async def handle_text(update: Update, context):
                 reply_markup=kb_branches(VISIBILITY_GROUPS[vis])
             )
             return
-        # из выбора филиала или просмотра телефонов/отчёта возвращаем на меню
+        # иначе возвращаем в главное меню
         context.user_data["step"] = "INIT"
-        await update.message.reply_text(
-            "Выберите опцию:",
-            reply_markup=kb_initial
-        )
+        await update.message.reply_text("Выберите опцию:", reply_markup=kb_initial)
         return
 
     # --- Шаг INIT: главное меню ---
@@ -84,7 +86,6 @@ async def handle_text(update: Update, context):
         if text in ("Россети ЮГ", "Россети Кубань"):
             context.user_data["step"] = "NETWORK_SELECTED"
             context.user_data["visibility"] = text
-            # выбор филиала сразу
             await update.message.reply_text(
                 "Выберите филиал:",
                 reply_markup=kb_branches(VISIBILITY_GROUPS[text])
@@ -97,18 +98,14 @@ async def handle_text(update: Update, context):
         if text in branches:
             context.user_data["step"] = "AWAIT_TP_INPUT"
             context.user_data["current_branch"] = text
-            await update.message.reply_text(
-                "Введите номер ТП:",
-                reply_markup=kb_back
-            )
+            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_back)
         return
 
-    # --- Шаг AWAIT_TP_INPUT: ввод ТП и поиск ---
+    # --- Шаг AWAIT_TP_INPUT: ввод TP и поиск ---
     if step == "AWAIT_TP_INPUT":
         branch = context.user_data["current_branch"]
-        # загрузка данных
+        res    = context.user_data.get("res")
         df = pd.read_csv(normalize_sheet_url(BRANCH_URLS[branch]))
-        res = context.user_data.get("res")
         if res != "All":
             df = df[df["РЭС"] == res]
         df.columns = df.columns.str.strip()
@@ -118,7 +115,6 @@ async def handle_text(update: Update, context):
         found = df[df["D_UP"].str.contains(q, na=False)]
 
         if found.empty:
-            context.user_data["step"] = "AWAIT_TP_INPUT"
             await update.message.reply_text("🔍 Ничего не найдено. Повторите ввод:", reply_markup=kb_back)
             return
 
@@ -130,34 +126,33 @@ async def handle_text(update: Update, context):
             await update.message.reply_text("Найдены несколько ТП, выберите:", reply_markup=kb)
             return
 
-        # Одна ТП — выводим детали
+        # Одна TP — выводим детали
         tp = unique_tp[0]
         details = found[found["Наименование ТП"] == tp]
         count = len(details)
-        # подтягиваем название РЭС из данных
         res_name = details.iloc[0]["РЭС"]
-        # заголовок
+        # Заголовок
         await update.message.reply_text(
             f"{res_name}, {tp} ({count}) ВОЛС с договором аренды.",
-            reply_markup=kb_back
+            reply_markup=kb_post_search
         )
-        # подробности
+        # Подробности
         for _, r in details.iterrows():
             await update.message.reply_text(
                 f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
                 f"Опоры: {r['Опоры']}\n"
                 f"Провайдер: {r.get('Наименование Провайдера','')}",
-                reply_markup=kb_back
+                reply_markup=kb_post_search
             )
-        # Задание выполнено
+        # Завершающее сообщение
         await update.message.reply_text(
             f"✅ Задание выполнено, {context.user_data['name']}.",
-            reply_markup=kb_back
+            reply_markup=kb_post_search
         )
-        context.user_data["step"] = "NETWORK_SELECTED"
+        context.user_data["step"] = "SEARCH_DONE"
         return
 
-    # --- Шаг DISAMBIGUOUS: выбор из нескольких ТП ---
+    # --- Шаг DISAMBIGUOUS: выбор из нескольких TP ---
     if step == "DISAMBIGUOUS":
         df = context.user_data["ambiguous_df"]
         if text in df["Наименование ТП"].unique():
@@ -166,23 +161,36 @@ async def handle_text(update: Update, context):
             res_name = details.iloc[0]["РЭС"]
             await update.message.reply_text(
                 f"{res_name}, {text} ({count}) ВОЛС с договором аренды.",
-                reply_markup=kb_back
+                reply_markup=kb_post_search
             )
             for _, r in details.iterrows():
                 await update.message.reply_text(
                     f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
                     f"Опоры: {r['Опоры']}\n"
                     f"Провайдер: {r.get('Наименование Провайдера','')}",
-                    reply_markup=kb_back
+                    reply_markup=kb_post_search
                 )
             await update.message.reply_text(
                 f"✅ Задание выполнено, {context.user_data['name']}.",
-                reply_markup=kb_back
+                reply_markup=kb_post_search
             )
-            context.user_data["step"] = "NETWORK_SELECTED"
+            context.user_data["step"] = "SEARCH_DONE"
         return
 
-# Регистрируем handlers
+    # --- Шаг SEARCH_DONE: обработка кнопок после поиска ---
+    if step == "SEARCH_DONE":
+        if text == "Новый поиск":
+            context.user_data["step"] = "AWAIT_TP_INPUT"
+            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_back)
+            return
+        if text == "🔔 Отправить уведомление ответственному":
+            # заглушка отправки уведомления
+            await update.message.reply_text("✉️ Уведомление отправлено ответственному.", reply_markup=kb_post_search)
+            return
+        # иначе «Назад» уже отработает ранее
+        return
+
+# Регистрируем хендлеры
 application.add_handler(CommandHandler("start", start_line))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
@@ -190,8 +198,5 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_t
 if __name__ == "__main__":
     threading.Thread(target=lambda: requests.get(f"{SELF_URL}/webhook"), daemon=True).start()
     application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="webhook",
-        webhook_url=f"{SELF_URL}/webhook"
+        listen="0.0.0.0", port=PORT, url_path="webhook", webhook_url=f"{SELF_URL}/webhook"
     )
