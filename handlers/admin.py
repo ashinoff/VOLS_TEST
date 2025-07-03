@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes, CommandHandler
 from config import VISIBILITY_GROUPS
 
 # ID админов
-ADMINS = {123456789, 987654321}
+ADMINS = {955536270, 987654321}
 
 # клавиатура выбора RK/RU
 kb_visibility = ReplyKeyboardMarkup(
