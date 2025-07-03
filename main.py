@@ -2,7 +2,7 @@
 import threading
 from flask import Flask
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup
 import re
 import requests
 import pandas as pd
@@ -19,13 +19,12 @@ kb_initial = ReplyKeyboardMarkup(
     [["Россети ЮГ"], ["Россети Кубань"], ["Телефоны провайдеров"], ["Сформировать отчёт"]],
     resize_keyboard=True
 )
-kb_back = ReplyKeyboardMarkup([["Назад"]], resize_keyboard=True)
+kb_back = ReplyKeyboardMarkup([["🔙 Назад"]], resize_keyboard=True)
 def kb_branches(branches):
-    btns = [[b] for b in branches] + [["Назад"]]
+    btns = [[b] for b in branches] + [["🔙 Назад"]]
     return ReplyKeyboardMarkup(btns, resize_keyboard=True)
-# После поиска: уведомление, новый поиск, назад
-kb_post_search = ReplyKeyboardMarkup(
-    [["🔔 Отправить уведомление ответственному"], ["Новый поиск"], ["Назад"]],
+kb_actions = ReplyKeyboardMarkup(
+    [["🔍 Поиск по ТП", "🔔 Отправить уведомление"], ["🔙 Назад"]],
     resize_keyboard=True
 )
 
@@ -49,7 +48,7 @@ async def start_line(update: Update, context):
 
 async def handle_text(update: Update, context):
     text = update.message.text.strip()
-    uid = update.effective_user.id
+    uid  = update.effective_user.id
     vis_map, bz, rz, names = load_zones()
     if uid not in bz:
         await update.message.reply_text("🚫 У вас нет доступа.", reply_markup=kb_back)
@@ -57,18 +56,18 @@ async def handle_text(update: Update, context):
 
     step = context.user_data.get("step", "INIT")
 
-    # --- Обработка «НАЗАД» ---
-    if text == "Назад":
-        if step in ("AWAIT_TP_INPUT", "DISAMBIGUOUS", "SEARCH_DONE"):
-            # возвращаемся к выбору филиала
+    # --- Обработка «Назад» ---
+    if text == "🔙 Назад":
+        if step in ("AWAIT_TP_INPUT", "DISAMBIGUOUS"):
+            context.user_data["step"] = "BRANCH_SELECTED"
+            await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
+            return
+        if step == "BRANCH_SELECTED":
             context.user_data["step"] = "NETWORK_SELECTED"
             vis = context.user_data["visibility"]
-            await update.message.reply_text(
-                "Выберите филиал:",
-                reply_markup=kb_branches(VISIBILITY_GROUPS[vis])
-            )
+            await update.message.reply_text("Выберите филиал:", reply_markup=kb_branches(VISIBILITY_GROUPS[vis]))
             return
-        # иначе возвращаем в главное меню
+        # NETWORK_SELECTED, VIEW_PHONES, VIEW_REPORT
         context.user_data["step"] = "INIT"
         await update.message.reply_text("Выберите опцию:", reply_markup=kb_initial)
         return
@@ -96,12 +95,24 @@ async def handle_text(update: Update, context):
     if step == "NETWORK_SELECTED":
         branches = VISIBILITY_GROUPS[context.user_data["visibility"]]
         if text in branches:
-            context.user_data["step"] = "AWAIT_TP_INPUT"
+            context.user_data["step"] = "BRANCH_SELECTED"
             context.user_data["current_branch"] = text
-            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_back)
+            await update.message.reply_text(
+                "Выберите действие:",
+                reply_markup=kb_actions
+            )
         return
 
-    # --- Шаг AWAIT_TP_INPUT: ввод TP и поиск ---
+    # --- Шаг BRANCH_SELECTED: действия в филиале ---
+    if step == "BRANCH_SELECTED":
+        if text == "🔍 Поиск по ТП":
+            context.user_data["step"] = "AWAIT_TP_INPUT"
+            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_back)
+        elif text == "🔔 Отправить уведомление":
+            await update.message.reply_text("✉️ Уведомление отправлено ответственному.", reply_markup=kb_actions)
+        return
+
+    # --- Шаг AWAIT_TP_INPUT: ввод ТП и поиск ---
     if step == "AWAIT_TP_INPUT":
         branch = context.user_data["current_branch"]
         res    = context.user_data.get("res")
@@ -122,19 +133,19 @@ async def handle_text(update: Update, context):
         if len(unique_tp) > 1:
             context.user_data["step"] = "DISAMBIGUOUS"
             context.user_data["ambiguous_df"] = found
-            kb = ReplyKeyboardMarkup([[tp] for tp in unique_tp] + [["Назад"]], resize_keyboard=True)
+            kb = ReplyKeyboardMarkup([[tp] for tp in unique_tp] + [["🔙 Назад"]], resize_keyboard=True)
             await update.message.reply_text("Найдены несколько ТП, выберите:", reply_markup=kb)
             return
 
-        # Одна TP — выводим детали
+        # Одна ТП — выводим детали
         tp = unique_tp[0]
         details = found[found["Наименование ТП"] == tp]
         count = len(details)
         res_name = details.iloc[0]["РЭС"]
         # Заголовок
         await update.message.reply_text(
-            f"{res_name}, {tp} ({count}) ВОЛС с договором аренды.",
-            reply_markup=kb_post_search
+            f"{res_name}, {tp} ({count}) ВОЛС с договором аренды.\nВыберите действие:",
+            reply_markup=kb_actions
         )
         # Подробности
         for _, r in details.iterrows():
@@ -142,17 +153,17 @@ async def handle_text(update: Update, context):
                 f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
                 f"Опоры: {r['Опоры']}\n"
                 f"Провайдер: {r.get('Наименование Провайдера','')}",
-                reply_markup=kb_post_search
+                reply_markup=kb_actions
             )
-        # Завершающее сообщение
+        # Завершение
         await update.message.reply_text(
-            f"✅ Задание выполнено, {context.user_data['name']}.",
-            reply_markup=kb_post_search
+            f"✅ Задание выполнено, {context.user_data['name']}. Выберите действие.",
+            reply_markup=kb_actions
         )
-        context.user_data["step"] = "SEARCH_DONE"
+        context.user_data["step"] = "BRANCH_SELECTED"
         return
 
-    # --- Шаг DISAMBIGUOUS: выбор из нескольких TP ---
+    # --- Шаг DISAMBIGUOUS: выбор из нескольких ТП ---
     if step == "DISAMBIGUOUS":
         df = context.user_data["ambiguous_df"]
         if text in df["Наименование ТП"].unique():
@@ -160,34 +171,21 @@ async def handle_text(update: Update, context):
             count = len(details)
             res_name = details.iloc[0]["РЭС"]
             await update.message.reply_text(
-                f"{res_name}, {text} ({count}) ВОЛС с договором аренды.",
-                reply_markup=kb_post_search
+                f"{res_name}, {text} ({count}) ВОЛС с договором аренды.\nВыберите действие:",
+                reply_markup=kb_actions
             )
             for _, r in details.iterrows():
                 await update.message.reply_text(
                     f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
                     f"Опоры: {r['Опоры']}\n"
                     f"Провайдер: {r.get('Наименование Провайдера','')}",
-                    reply_markup=kb_post_search
+                    reply_markup=kb_actions
                 )
             await update.message.reply_text(
-                f"✅ Задание выполнено, {context.user_data['name']}.",
-                reply_markup=kb_post_search
+                f"✅ Задание выполнено, {context.user_data['name']}. Выберите действие.",
+                reply_markup=kb_actions
             )
-            context.user_data["step"] = "SEARCH_DONE"
-        return
-
-    # --- Шаг SEARCH_DONE: обработка кнопок после поиска ---
-    if step == "SEARCH_DONE":
-        if text == "Новый поиск":
-            context.user_data["step"] = "AWAIT_TP_INPUT"
-            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_back)
-            return
-        if text == "🔔 Отправить уведомление ответственному":
-            # заглушка отправки уведомления
-            await update.message.reply_text("✉️ Уведомление отправлено ответственному.", reply_markup=kb_post_search)
-            return
-        # иначе «Назад» уже отработает ранее
+            context.user_data["step"] = "BRANCH_SELECTED"
         return
 
 # Регистрируем хендлеры
