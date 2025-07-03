@@ -3,3 +3,4 @@ Flask
 requests
 pandas
 APScheduler
+urllib3==1.26.16
