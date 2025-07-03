@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 
 # Здесь укажите реальные ID админов
-ADMINS = {123456789, 987654321}
+ADMINS = {955536270, 987654321}
 
 async def start_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS:
