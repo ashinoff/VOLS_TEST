@@ -23,7 +23,6 @@ kb_back = ReplyKeyboardMarkup([["Назад"]], resize_keyboard=True)
 def kb_branches(branches):
     btns = [[b] for b in branches] + [["Назад"]]
     return ReplyKeyboardMarkup(btns, resize_keyboard=True)
-kb_search = ReplyKeyboardMarkup([["Поиск по ТП"], ["Назад"]], resize_keyboard=True)
 
 # === Хендлеры ===
 async def start_line(update: Update, context):
@@ -35,9 +34,9 @@ async def start_line(update: Update, context):
     # Сброс состояния
     context.user_data.clear()
     context.user_data["step"] = "INIT"
-    context.user_data["res"]  = rz[uid]
+    context.user_data["res"] = rz[uid]
     context.user_data["name"] = names[uid]
-
+    # Приветствие и главное меню
     await update.message.reply_text(
         f"Привет, {names[uid]}! Выберите опцию:",
         reply_markup=kb_initial
@@ -45,7 +44,7 @@ async def start_line(update: Update, context):
 
 async def handle_text(update: Update, context):
     text = update.message.text.strip()
-    uid  = update.effective_user.id
+    uid = update.effective_user.id
     vis_map, bz, rz, names = load_zones()
     if uid not in bz:
         await update.message.reply_text("🚫 У вас нет доступа.", reply_markup=kb_back)
@@ -53,21 +52,23 @@ async def handle_text(update: Update, context):
 
     step = context.user_data.get("step", "INIT")
 
-    # --- Кнопка «Назад» ---
+    # --- «Назад» ---
     if text == "Назад":
         if step in ("AWAIT_TP_INPUT", "DISAMBIGUOUS"):
-            context.user_data["step"] = "BRANCH_SELECTED"
-            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_search)
-            return
-        if step == "BRANCH_SELECTED":
+            # возвращаем выбор филиала
             context.user_data["step"] = "NETWORK_SELECTED"
             vis = context.user_data["visibility"]
-            await update.message.reply_text("Выберите филиал:", reply_markup=kb_branches(VISIBILITY_GROUPS[vis]))
+            await update.message.reply_text(
+                "Выберите филиал:",
+                reply_markup=kb_branches(VISIBILITY_GROUPS[vis])
+            )
             return
-        if step in ("VIEW_PHONES", "VIEW_REPORT", "NETWORK_SELECTED"):
-            context.user_data["step"] = "INIT"
-            await update.message.reply_text("Выберите опцию:", reply_markup=kb_initial)
-            return
+        # из выбора филиала или просмотра телефонов/отчёта возвращаем на меню
+        context.user_data["step"] = "INIT"
+        await update.message.reply_text(
+            "Выберите опцию:",
+            reply_markup=kb_initial
+        )
         return
 
     # --- Шаг INIT: главное меню ---
@@ -83,6 +84,7 @@ async def handle_text(update: Update, context):
         if text in ("Россети ЮГ", "Россети Кубань"):
             context.user_data["step"] = "NETWORK_SELECTED"
             context.user_data["visibility"] = text
+            # выбор филиала сразу
             await update.message.reply_text(
                 "Выберите филиал:",
                 reply_markup=kb_branches(VISIBILITY_GROUPS[text])
@@ -93,26 +95,20 @@ async def handle_text(update: Update, context):
     if step == "NETWORK_SELECTED":
         branches = VISIBILITY_GROUPS[context.user_data["visibility"]]
         if text in branches:
-            context.user_data["step"] = "BRANCH_SELECTED"
+            context.user_data["step"] = "AWAIT_TP_INPUT"
             context.user_data["current_branch"] = text
             await update.message.reply_text(
                 "Введите номер ТП:",
-                reply_markup=kb_search
+                reply_markup=kb_back
             )
-        return
-
-    # --- Шаг BRANCH_SELECTED: меню поиска в филиале ---
-    if step == "BRANCH_SELECTED":
-        if text == "Поиск по ТП":
-            context.user_data["step"] = "AWAIT_TP_INPUT"
-            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_back)
         return
 
     # --- Шаг AWAIT_TP_INPUT: ввод ТП и поиск ---
     if step == "AWAIT_TP_INPUT":
         branch = context.user_data["current_branch"]
-        res    = context.user_data.get("res")
+        # загрузка данных
         df = pd.read_csv(normalize_sheet_url(BRANCH_URLS[branch]))
+        res = context.user_data.get("res")
         if res != "All":
             df = df[df["РЭС"] == res]
         df.columns = df.columns.str.strip()
@@ -122,8 +118,8 @@ async def handle_text(update: Update, context):
         found = df[df["D_UP"].str.contains(q, na=False)]
 
         if found.empty:
-            context.user_data["step"] = "BRANCH_SELECTED"
-            await update.message.reply_text("🔍 Ничего не найдено.", reply_markup=kb_search)
+            context.user_data["step"] = "AWAIT_TP_INPUT"
+            await update.message.reply_text("🔍 Ничего не найдено. Повторите ввод:", reply_markup=kb_back)
             return
 
         unique_tp = found["Наименование ТП"].unique().tolist()
@@ -136,22 +132,29 @@ async def handle_text(update: Update, context):
 
         # Одна ТП — выводим детали
         tp = unique_tp[0]
-        count = len(found)
-        # первая строка: РЭС, ТП (count) ВОЛС с договором аренды
-        res_name = context.user_data["res"]
+        details = found[found["Наименование ТП"] == tp]
+        count = len(details)
+        # подтягиваем название РЭС из данных
+        res_name = details.iloc[0]["РЭС"]
+        # заголовок
         await update.message.reply_text(
             f"{res_name}, {tp} ({count}) ВОЛС с договором аренды.",
             reply_markup=kb_back
         )
-        # детали: ВЛ, Опоры, Провайдер
-        for _, r in found.iterrows():
+        # подробности
+        for _, r in details.iterrows():
             await update.message.reply_text(
                 f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
                 f"Опоры: {r['Опоры']}\n"
                 f"Провайдер: {r.get('Наименование Провайдера','')}",
                 reply_markup=kb_back
             )
-        context.user_data["step"] = "BRANCH_SELECTED"
+        # Задание выполнено
+        await update.message.reply_text(
+            f"✅ Задание выполнено, {context.user_data['name']}.",
+            reply_markup=kb_back
+        )
+        context.user_data["step"] = "NETWORK_SELECTED"
         return
 
     # --- Шаг DISAMBIGUOUS: выбор из нескольких ТП ---
@@ -160,7 +163,7 @@ async def handle_text(update: Update, context):
         if text in df["Наименование ТП"].unique():
             details = df[df["Наименование ТП"] == text]
             count = len(details)
-            res_name = context.user_data["res"]
+            res_name = details.iloc[0]["РЭС"]
             await update.message.reply_text(
                 f"{res_name}, {text} ({count}) ВОЛС с договором аренды.",
                 reply_markup=kb_back
@@ -172,10 +175,14 @@ async def handle_text(update: Update, context):
                     f"Провайдер: {r.get('Наименование Провайдера','')}",
                     reply_markup=kb_back
                 )
-            context.user_data["step"] = "BRANCH_SELECTED"
+            await update.message.reply_text(
+                f"✅ Задание выполнено, {context.user_data['name']}.",
+                reply_markup=kb_back
+            )
+            context.user_data["step"] = "NETWORK_SELECTED"
         return
 
-# Регистрируем хендлеры
+# Регистрируем handlers
 application.add_handler(CommandHandler("start", start_line))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
