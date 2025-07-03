@@ -1,23 +1,22 @@
-# config.py (изменен)
-
 import os
 
-# Токен вашего бота
+# Токен бота
 TOKEN = os.getenv("TOKEN")
 
-# Публичный URL вашего сервиса, без слеша на конце
+# Публичный адрес вашего приложения (без конечного слэша)
 SELF_URL = os.getenv("SELF_URL", "").rstrip('/')
 
-# Порт для запуска (Render, Heroku и т.п.)
+# Порт (Render, Heroku и т.д.)
 PORT = int(os.getenv("PORT", 5000))
 
-# Ссылка на Google Sheet с файлами зон и ответственными
+# URL Google Sheet с колонками:
+# RK/UG/All | Филиал | РЭС | ID | ФИО | Ответственный
 ZONES_CSV_URL = os.getenv("ZONES_CSV_URL", "").strip()
 
-# Отдельный лист для поиска ТП/ВЛ при уведомлениях (TIMASHEV_ES_URL_SP)
+# URL отдельного листа для уведомлений по ТП/ВЛ (Timash... URL SP)
 NOTIFY_SHEET_URL = os.getenv("TIMASHEV_ES_URL_SP", "").strip()
 
-# URL-ы CSV для каждого филиала
+# CSV URL-ы по каждому филиалу (используются для поиска ВОЛС)
 BRANCH_URLS = {
     "Юго-Западные ЭС":   os.getenv("YUGO_ZAPAD_ES_URL", ""),
     "Усть-Лабинские ЭС":  os.getenv("UST_LAB_ES_URL", ""),
@@ -32,10 +31,9 @@ BRANCH_URLS = {
     "Адыгейские ЭС":      os.getenv("ADYGEA_ES_URL", ""),
 }
 
-# Группировка филиалов по видимости
-# Пользователь с RK видит "Россети Кубань", с UG — "Россети ЮГ"
+# Группируем филиалы по видимости
 VISIBILITY_GROUPS = {
-    "Россети ЮГ":     [
+    "Россети ЮГ": [
         "Юго-Западные ЭС",
         "Усть-Лабинские ЭС",
         "Сочинские ЭС",
