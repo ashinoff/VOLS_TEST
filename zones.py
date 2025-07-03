@@ -21,7 +21,7 @@ def normalize_sheet_url(url: str) -> str:
 
 
 def load_zones():
-    """Возвращает три словаря: branch_by_uid, res_by_uid, name_by_uid."""
+    """Возвращает четыре словаря: visibility_by_uid, branch_by_uid, res_by_uid, name_by_uid"""
     url = normalize_sheet_url(ZONES_CSV_URL)
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
@@ -29,13 +29,14 @@ def load_zones():
         StringIO(resp.content.decode('utf-8-sig')),
         header=None, skiprows=1
     )
-    bz, rz, names = {}, {}, {}
+    vis_map, bz, rz, names = {}, {}, {}, {}
     for _, row in df.iterrows():
         try:
-            uid = int(row[2])
+            uid = int(row[3])  # ID теперь в 4-й колонке (индекс 3)
         except:
             continue
-        bz[uid]    = row[0].strip()
-        rz[uid]    = row[1].strip()
-        names[uid] = row[3].strip()
-    return bz, rz, names
+        vis_map[uid] = row[0].strip()   # RK/RU/All
+        bz[uid]      = row[1].strip()   # Филиал
+        rz[uid]      = row[2].strip()   # РЭС
+        names[uid]   = row[4].strip()   # ФИО
+    return vis_map, bz, rz, names
