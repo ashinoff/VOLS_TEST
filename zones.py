@@ -4,8 +4,8 @@ import pandas as pd
 from io import StringIO
 from config import ZONES_CSV_URL
 
-
 def normalize_sheet_url(url: str) -> str:
+    # (ваша старая функция нормализации)
     if 'output=csv' in url or '/export' in url or url.endswith('.csv'):
         return url
     m = re.search(r'/d/e/([\w-]+)/', url)
@@ -19,24 +19,20 @@ def normalize_sheet_url(url: str) -> str:
         return f'https://drive.google.com/uc?export=download&id={m2.group(1)}'
     return url
 
-
 def load_zones():
-    """Возвращает четыре словаря: visibility_by_uid, branch_by_uid, res_by_uid, name_by_uid"""
-    url = normalize_sheet_url(ZONES_CSV_URL)
-    resp = requests.get(url, timeout=10)
+    resp = requests.get(normalize_sheet_url(ZONES_CSV_URL), timeout=10)
     resp.raise_for_status()
-    df = pd.read_csv(
-        StringIO(resp.content.decode('utf-8-sig')),
-        header=None, skiprows=1
-    )
-    vis_map, bz, rz, names = {}, {}, {}, {}
+    df = pd.read_csv(StringIO(resp.content.decode('utf-8-sig')),
+                     header=None, skiprows=1)
+    vis_map, bz, rz, names, resp_map = {}, {}, {}, {}, {}
     for _, row in df.iterrows():
         try:
-            uid = int(row[3])  # ID теперь в 4-й колонке (индекс 3)
+            uid = int(row[3])
         except:
             continue
-        vis_map[uid] = row[0].strip()   # RK/RU/All
-        bz[uid]      = row[1].strip()   # Филиал
-        rz[uid]      = row[2].strip()   # РЭС
-        names[uid]   = row[4].strip()   # ФИО
-    return vis_map, bz, rz, names
+        vis_map[uid]  = row[0].strip()
+        bz[uid]       = row[1].strip()
+        rz[uid]       = row[2].strip()
+        names[uid]    = row[4].strip()
+        resp_map[uid] = row[5].strip()  # новая колонка «Ответственный»
+    return vis_map, bz, rz, names, resp_map
