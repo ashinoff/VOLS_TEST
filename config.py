@@ -1,9 +1,10 @@
+# config.py
+
 import os
 
 TOKEN         = os.getenv("TOKEN")
 SELF_URL      = os.getenv("SELF_URL", "").rstrip('/')
 PORT          = int(os.getenv("PORT", 5000))
-
 ZONES_CSV_URL = os.getenv("ZONES_CSV_URL", "").strip()
 
 BRANCH_URLS = {
@@ -18,4 +19,24 @@ BRANCH_URLS = {
     "Краснодарские ЭС":  os.getenv("KRASN_ES_URL", ""),
     "Армавирские ЭС":    os.getenv("ARMAVIR_ES_URL", ""),
     "Адыгейские ЭС":     os.getenv("ADYGEA_ES_URL", ""),
+}
+
+# ---- добавляем сюда ----
+# Группируем филиалы по видимости
+VISIBILITY_GROUPS = {
+    "Россети ЮГ": [
+        "Юго-Западные ЭС",
+        "Усть-Лабинские ЭС",
+        "Сочинские ЭС",
+        "Славянские ЭС",
+        "Лабинские ЭС",
+        "Армавирские ЭС",
+        "Адыгейские ЭС",
+    ],
+    "Россети Кубань": [
+        "Тимашевские ЭС",
+        "Тихорецкие ЭС",
+        "Ленинградские ЭС",
+        "Краснодарские ЭС",
+    ],
 }
