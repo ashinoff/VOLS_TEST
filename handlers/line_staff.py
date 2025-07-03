@@ -4,19 +4,31 @@ from zones import load_zones
 from search import search_tp
 from config import VISIBILITY_GROUPS
 
-# Клавиатуры
-kb_visibility = ReplyKeyboardMarkup(
-    [[name] for name in VISIBILITY_GROUPS.keys()],
-    resize_keyboard=True
-)
+# Начальное меню: сети, телефоны, отчет
+initial_buttons = [
+    ["Россети ЮГ"],
+    ["Россети Кубань"],
+    ["Телефоны провайдеров"],
+    ["Сформировать отчет"],
+]
+kb_initial = ReplyKeyboardMarkup(initial_buttons, resize_keyboard=True)
 
+# Кнопка Назад
+def kb_back():
+    return ReplyKeyboardMarkup([["Назад"]], resize_keyboard=True)
+
+# Клавиатура филиалов с кнопкой Назад
 def kb_branches(branches):
-    return ReplyKeyboardMarkup([[b] for b in branches], resize_keyboard=True)
+    btns = [[b] for b in branches]
+    btns.append(["Назад"])
+    return ReplyKeyboardMarkup(btns, resize_keyboard=True)
 
-kb_search = ReplyKeyboardMarkup(
-    [["Поиск по ТП"], ["Выбор филиала"]],
-    resize_keyboard=True
-)
+# Клавиатура поиска
+def kb_search():
+    return ReplyKeyboardMarkup(
+        [["Поиск по ТП"], ["Назад"]],
+        resize_keyboard=True
+    )
 
 async def start_line(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
@@ -24,77 +36,86 @@ async def start_line(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in bz:
         await update.message.reply_text("🚫 У вас нет доступа.")
         return
-    vis, branch, res, name = vis_map[uid], bz[uid], rz[uid], names[uid]
     context.user_data.clear()
-    context.user_data['role'] = 'line_staff'
-    context.user_data['res'] = res
-    # Шаг 1: выбор видимости
-    if vis != 'All':
-        context.user_data['visibility'] = vis
-        branches = VISIBILITY_GROUPS.get(vis, [])
-        await update.message.reply_text(
-            f"👷 Привет, {name}! Видимость: {vis}.",
-            reply_markup=kb_branches(branches)
-        )
-    else:
-        await update.message.reply_text(
-            f"👷 Привет, {name}! Выберите группу филиалов:",
-            reply_markup=kb_visibility
-        )
+    await update.message.reply_text(
+        f"👷 Привет, {names[uid]}! Выберите опцию:",
+        reply_markup=kb_initial
+    )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if context.user_data.get('role') != 'line_staff':
+    uid = update.message.from_user.id
+    vis_map, bz, rz, names = load_zones()
+
+    # Назад
+    if text == "Назад":
+        return await start_line(update, context)
+
+    # Главные опции
+    if text == "Телефоны провайдеров":
+        await update.message.reply_text(
+            "📞 Телефоны провайдеров: ...",
+            reply_markup=kb_back()
+        )
         return
-    # Шаг 2: выбор филиала
-    if 'visibility' in context.user_data and 'current_branch' not in context.user_data:
-        branches = VISIBILITY_GROUPS[context.user_data['visibility']]
+    if text == "Сформировать отчет":
+        await update.message.reply_text(
+            "📝 Ваш отчет сформирован.",
+            reply_markup=kb_back()
+        )
+        return
+
+    # Выбор сети
+    if text in ("Россети ЮГ", "Россети Кубань"):
+        context.user_data["visibility"] = text
+        branches = VISIBILITY_GROUPS[text]
+        await update.message.reply_text(
+            f"Вы выбрали {text}. Теперь выберите филиал:",
+            reply_markup=kb_branches(branches)
+        )
+        return
+
+    # Выбор филиала
+    if "visibility" in context.user_data and "current_branch" not in context.user_data:
+        branches = VISIBILITY_GROUPS[context.user_data["visibility"]]
         if text in branches:
-            context.user_data['current_branch'] = text
+            context.user_data["current_branch"] = text
             await update.message.reply_text(
-                f"Филиал {text} выбран. Введите номер ТП:",
-                reply_markup=kb_search
-            )
-        elif text in VISIBILITY_GROUPS:
-            # пользователь выбрал группу вместо филиала
-            branches = VISIBILITY_GROUPS[text]
-            context.user_data['visibility'] = text
-            await update.message.reply_text(
-                f"Вы выбрали {text}. Теперь выберите филиал:",
-                reply_markup=kb_branches(branches)
+                f"Филиал {text} выбран. Выберите действие или введите номер ТП:",
+                reply_markup=kb_search()
             )
         return
-    # Шаг 3: поиск или возврат к выбору филиала
-    if text == 'Выбор филиала':
-        await update.message.reply_text(
-            "Выберите филиал:",
-            reply_markup=kb_branches(VISIBILITY_GROUPS[context.user_data['visibility']])
-        )
+
+    # Поиск по ТП
+    if "current_branch" in context.user_data:
+        if text == "Поиск по ТП":
+            await update.message.reply_text(
+                "Введите номер ТП:",
+                reply_markup=kb_back()
+            )
+            return
+        branch = context.user_data["current_branch"]
+        res = context.user_data.get("res")
+        df = search_tp(branch, text, res_filter=res)
+        if df.empty:
+            await update.message.reply_text(
+                "🔍 Ничего не найдено.",
+                reply_markup=kb_back()
+            )
+            return
+        for _, r in df.iterrows():
+            await update.message.reply_text(
+                f"📍 {r['Наименование ТП']}\n"
+                f"ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
+                f"Опоры: {r['Опоры']} ({r['Количество опор']})\n"
+                f"Провайдер: {r.get('Наименование Провайдера','')}"
+                + (f", договор {r.get('Номер договора')}" if r.get('Номер договора') else ""),
+                reply_markup=kb_back()
+            )
         return
-    if text == 'Поиск по ТП':
-        await update.message.reply_text(
-            "Введите номер ТП:",
-            reply_markup=kb_search
-        )
-        return
-    # Шаг 4: выполняем поиск
-    df = search_tp(
-        context.user_data['current_branch'],
-        text,
-        res_filter=context.user_data.get('res')
-    )
-    if df.empty:
-        await update.message.reply_text("🔍 Ничего не найдено.", reply_markup=kb_search)
-        return
-    for _, r in df.iterrows():
-        await update.message.reply_text(
-            f"📍 {r['Наименование ТП']}\n"
-            f"ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
-            f"Опоры: {r['Опоры']} ({r['Количество опор']})\n"
-            f"Провайдер: {r.get('Наименование Провайдера','')}"
-            + (f", договор {r.get('Номер договора')}" if r.get('Номер договора') else ""),
-            reply_markup=kb_search
-        )
+
+    # По умолчанию возвращаемся в начало
+    return await start_line(update, context)
 
 handler_start = CommandHandler("start", start_line)
 handler_text = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
