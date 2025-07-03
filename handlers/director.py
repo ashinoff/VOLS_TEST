@@ -11,7 +11,7 @@ async def start_director(update: Update, context: ContextTypes.DEFAULT_TYPE):
     branch, res, name = bz[uid], rz[uid], names[uid]
     if branch != "All" and res == "All":
         kb_visibility = ReplyKeyboardMarkup(
-            [[k] for k in VISIBILITY_GROUPS.keys()],
+            [[name] for name in VISIBILITY_GROUPS.keys()],
             resize_keyboard=True
         )
         await update.message.reply_text(
