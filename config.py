@@ -3,20 +3,21 @@ import os
 # Токен бота
 TOKEN = os.getenv("TOKEN")
 
-# Публичный адрес вашего приложения (без конечного слэша)
+# Публичный URL приложения без конечного слэша
 SELF_URL = os.getenv("SELF_URL", "").rstrip('/')
 
-# Порт (Render, Heroku и т.д.)
+# Порт (Render задаёт автоматически)
+# По умолчанию 5000
 PORT = int(os.getenv("PORT", 5000))
 
-# URL Google Sheet с колонками:
-# RK/UG/All | Филиал | РЭС | ID | ФИО | Ответственный
+# Ссылка на Google Sheet с колонками:
+# Видимость | Филиал | РЭС | ID | ФИО | Ответственный
 ZONES_CSV_URL = os.getenv("ZONES_CSV_URL", "").strip()
 
-# URL отдельного листа для уведомлений по ТП/ВЛ (Timash... URL SP)
+# Отдельный лист для уведомлений по ТП/ВЛ
 NOTIFY_SHEET_URL = os.getenv("TIMASHEV_ES_URL_SP", "").strip()
 
-# CSV URL-ы по каждому филиалу (используются для поиска ВОЛС)
+# CSV URL-ы филиальных таблиц (ВОЛС)
 BRANCH_URLS = {
     "Юго-Западные ЭС":   os.getenv("YUGO_ZAPAD_ES_URL", ""),
     "Усть-Лабинские ЭС":  os.getenv("UST_LAB_ES_URL", ""),
@@ -31,7 +32,7 @@ BRANCH_URLS = {
     "Адыгейские ЭС":      os.getenv("ADYGEA_ES_URL", ""),
 }
 
-# Группируем филиалы по видимости
+# Разбиение филиалов по видимости
 VISIBILITY_GROUPS = {
     "Россети ЮГ": [
         "Юго-Западные ЭС",
