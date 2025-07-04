@@ -5,6 +5,8 @@ import threading
 import re
 import requests
 import pandas as pd
+import csv
+from datetime import datetime
 from io import StringIO
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
@@ -22,7 +24,21 @@ from zones import normalize_sheet_url, load_zones
 app = Flask(__name__)
 application = ApplicationBuilder().token(TOKEN).build()
 
-# «Сырые» имена филиалов → ключи BRANCH_URLS
+# — Лог уведомлений —
+# ENV-переменная для пути к файлу лога
+LOG_NOTIFY_FILE = os.getenv("NOTIFY_LOG_FILE", "notifications_log.csv")
+# При старте, если файла нет — создаём с заголовком
+if not os.path.exists(LOG_NOTIFY_FILE):
+    with open(LOG_NOTIFY_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "Filial", "РЭС",
+            "SenderID", "SenderName",
+            "RecipientID", "RecipientName",
+            "Timestamp", "Coordinates"
+        ])
+
+# — Сырые имена филиалов → ключи BRANCH_URLS —
 BRANCH_KEY_MAP = {
     "Тимашевский":      "Тимашевские ЭС",
     "Усть-Лабинский":   "Усть-Лабинские ЭС",
@@ -43,7 +59,7 @@ BRANCH_KEY_MAP = {
     "Северный":         "Северные ЭС",
 }
 
-# Клавиатуры
+# — Клавиатуры —
 kb_back = ReplyKeyboardMarkup([["🔙 Назад"]], resize_keyboard=True)
 
 def build_initial_kb(vis_flag: str) -> ReplyKeyboardMarkup:
@@ -78,7 +94,7 @@ kb_request_location = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# /start
+# — /start —
 async def start_line(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     vis_map, raw_branch_map, res_map, names, resp_map = load_zones()
@@ -107,7 +123,7 @@ async def start_line(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=build_initial_kb(vis_map[uid])
     )
 
-# Обработка текстовых сообщений
+# — Обработка текстовых сообщений —
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid  = update.effective_user.id
@@ -129,13 +145,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resp_flag   = context.user_data["resp_map"].get(uid, "").strip()
     user_name   = context.user_data["name"]
 
-    # Назад
+    # — Назад —
     if text == "🔙 Назад":
-        if step in (
-            "AWAIT_TP_INPUT", "DISAMBIGUOUS",
-            "NOTIFY_AWAIT_TP", "NOTIFY_DISAMBIGUOUS",
-            "NOTIFY_AWAIT_VL", "NOTIFY_WAIT_GEO"
-        ):
+        if step in ("AWAIT_TP_INPUT","DISAMBIGUOUS", "NOTIFY_AWAIT_TP","NOTIFY_DISAMBIGUOUS",
+                    "NOTIFY_AWAIT_VL","NOTIFY_WAIT_GEO"):
             context.user_data["step"] = "BRANCH_SELECTED"
             await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
             return
@@ -147,7 +160,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Выберите опцию:", reply_markup=build_initial_kb(vis_flag))
         return
 
-    # INIT
+    # — INIT —
     if step == "INIT":
         if text == "📞 Телефоны провайдеров":
             context.user_data["step"] = "VIEW_PHONES"
@@ -159,16 +172,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         flag = vis_flag.strip().upper()
-        allowed = (["⚡ Россети ЮГ", "⚡ Россети Кубань"] if flag=="ALL"
+        allowed = (["⚡ Россети ЮГ","⚡ Россети Кубань"] if flag=="ALL"
                    else ["⚡ Россети ЮГ"] if flag=="UG"
                    else ["⚡ Россети Кубань"])
 
         if text in allowed:
-            selected_net = text.replace("⚡ ", "")
-            context.user_data.update({
-                "step":         "NETWORK_SELECTED",
-                "selected_net": selected_net
-            })
+            selected_net = text.replace("⚡ ","")
+            context.user_data["step"]         = "NETWORK_SELECTED"
+            context.user_data["selected_net"] = selected_net
             await update.message.reply_text(
                 "Выберите филиал:",
                 reply_markup=build_branch_kb(uid, selected_net, branch_map)
@@ -180,15 +191,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # NETWORK_SELECTED
+    # — NETWORK_SELECTED —
     if step == "NETWORK_SELECTED":
         selected_net = context.user_data["selected_net"]
         allowed = [branch_user] if branch_user!="All" else list(BRANCH_URLS[selected_net].keys())
         if text in allowed:
-            context.user_data.update({
-                "step":           "BRANCH_SELECTED",
-                "current_branch": text
-            })
+            context.user_data["step"] = "BRANCH_SELECTED"
+            context.user_data["current_branch"] = text
             await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
         else:
             await update.message.reply_text(
@@ -197,7 +206,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # BRANCH_SELECTED
+    # — BRANCH_SELECTED —
     if step == "BRANCH_SELECTED":
         if text == "🔍 Поиск по ТП":
             context.user_data["step"] = "AWAIT_TP_INPUT"
@@ -212,13 +221,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return
 
-    # AWAIT_TP_INPUT
+    # — AWAIT_TP_INPUT —
     if step == "AWAIT_TP_INPUT":
         selected_net   = context.user_data["selected_net"]
         current_branch = context.user_data["current_branch"]
         url = BRANCH_URLS[selected_net][current_branch]
         df = pd.read_csv(normalize_sheet_url(url))
-        if res_user != "All":
+        if res_user!="All":
             norm=lambda s:re.sub(r'\W','',str(s).upper())
             df = df[df["РЭС"].apply(norm)==norm(res_user)]
         df.columns=df.columns.str.strip()
@@ -254,7 +263,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"]="BRANCH_SELECTED"
         return
 
-    # DISAMBIGUOUS
+    # — DISAMBIGUOUS —
     if step=="DISAMBIGUOUS":
         if text=="🔙 Назад":
             context.user_data["step"]="AWAIT_TP_INPUT"
@@ -278,7 +287,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["step"]="BRANCH_SELECTED"
         return
 
-    # NOTIFY_AWAIT_TP
+    # — NOTIFY_AWAIT_TP —
     if step=="NOTIFY_AWAIT_TP":
         current_branch=context.user_data["current_branch"]
         sheet_url=NOTIFY_URLS.get(current_branch,"")
@@ -306,7 +315,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Выберите ВЛ для уведомления:",reply_markup=kb)
         return
 
-    # NOTIFY_DISAMBIGUOUS
+    # — NOTIFY_DISAMBIGUOUS —
     if step=="NOTIFY_DISAMBIGUOUS":
         if text=="🔙 Назад":
             context.user_data["step"]="NOTIFY_AWAIT_TP"
@@ -323,7 +332,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Выберите ВЛ для уведомления:",reply_markup=kb)
         return
 
-    # NOTIFY_AWAIT_VL
+    # — NOTIFY_AWAIT_VL —
     if step=="NOTIFY_AWAIT_VL":
         if text=="🔙 Назад":
             context.user_data["step"]="NOTIFY_AWAIT_TP"
@@ -339,7 +348,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Отправьте геолокацию:",reply_markup=kb_request_location)
         return
 
-# Обработка геолокации
+# — Обработка геолокации —
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("step")!="NOTIFY_WAIT_GEO":
         return
@@ -355,6 +364,22 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=cid,text=notif_text)
         await context.bot.send_location(chat_id=cid,latitude=loc.latitude,longitude=loc.longitude)
         await context.bot.send_message(chat_id=cid,text=f"📍 Широта: {loc.latitude:.6f}, Долгота: {loc.longitude:.6f}")
+    # — Логируем в CSV —
+    filial = context.user_data["branch_user"]
+    for cid in recips:
+        with open(LOG_NOTIFY_FILE, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                filial,
+                res,
+                update.effective_user.id,
+                sender,
+                cid,
+                names_map.get(cid, ""),
+                datetime.utcnow().isoformat(),
+                f"{loc.latitude:.6f},{loc.longitude:.6f}"
+            ])
+    # — Ответ инициатору —
     if recips:
         fio_list=[names_map[cid] for cid in recips]
         await update.message.reply_text(
@@ -365,12 +390,12 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠ Ответственный на {res} РЭС не назначен.",reply_markup=kb_actions)
     context.user_data["step"]="BRANCH_SELECTED"
 
-# Регистрируем хендлеры
+# — Регистрируем хендлеры —
 application.add_handler(CommandHandler("start", start_line))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 application.add_handler(MessageHandler(filters.LOCATION, location_handler))
 
-# Запуск webhook
+# — Запуск вебхука —
 if __name__ == "__main__":
     threading.Thread(target=lambda: requests.get(f"{SELF_URL}/webhook"), daemon=True).start()
     application.run_webhook(
