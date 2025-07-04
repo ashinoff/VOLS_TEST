@@ -16,13 +16,20 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import TOKEN, SELF_URL, PORT, ZONES_CSV_URL, BRANCH_URLS, NOTIFY_SHEET_URL
+from config import (
+    TOKEN,
+    SELF_URL,
+    PORT,
+    ZONES_CSV_URL,
+    BRANCH_URLS,
+    NOTIFY_URLS,
+)
 from zones import normalize_sheet_url, load_zones
 
 app = Flask(__name__)
 application = ApplicationBuilder().token(TOKEN).build()
 
-# — Сопоставление «сырых» имён филиалов → ключи BRANCH_URLS
+# Сопоставление «сырых» имён филиалов → ключи BRANCH_URLS
 BRANCH_KEY_MAP = {
     "Тимашевский":      "Тимашевские ЭС",
     "Усть-Лабинский":   "Усть-Лабинские ЭС",
@@ -41,10 +48,10 @@ BRANCH_KEY_MAP = {
     "Северо-Восточный": "Северо-Восточные ЭС",
     "Юго-Восточный":    "Юго-Восточные ЭС",
     "Северный":         "Северные ЭС",
-    # «Юго-Западные ЭС» остаётся тем же ключом в обеих сетях
+    # «Юго-Западные ЭС» одинаково для обеих сетей
 }
 
-# — Клавиатуры —
+# Клавиатуры
 kb_back = ReplyKeyboardMarkup([["🔙 Назад"]], resize_keyboard=True)
 
 def build_initial_kb(vis_flag: str) -> ReplyKeyboardMarkup:
@@ -79,15 +86,15 @@ kb_request_location = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# — Команда /start —
+# /start
 async def start_line(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     vis_map, raw_branch_map, res_map, names, resp_map = load_zones()
 
-    branch_map = {
-        u: ("All" if raw == "All" else BRANCH_KEY_MAP.get(raw, raw))
-        for u, raw in raw_branch_map.items()
-    }
+    # Сопоставление «сырых» имён филиалов
+    branch_map = {}
+    for u, raw in raw_branch_map.items():
+        branch_map[u] = "All" if raw == "All" else BRANCH_KEY_MAP.get(raw, raw)
 
     if uid not in branch_map:
         await update.message.reply_text("🚫 У вас нет доступа.", reply_markup=kb_back)
@@ -108,16 +115,15 @@ async def start_line(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=build_initial_kb(vis_map[uid])
     )
 
-# — Обработка текстовых сообщений —
+# Обработка текстовых сообщений
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid  = update.effective_user.id
 
     vis_map, raw_branch_map, res_map, names, _ = load_zones()
-    branch_map = {
-        u: ("All" if raw == "All" else BRANCH_KEY_MAP.get(raw, raw))
-        for u, raw in raw_branch_map.items()
-    }
+    branch_map = {}
+    for u, raw in raw_branch_map.items():
+        branch_map[u] = "All" if raw == "All" else BRANCH_KEY_MAP.get(raw, raw)
 
     if uid not in branch_map:
         await update.message.reply_text("🚫 У вас нет доступа.", reply_markup=kb_back)
@@ -130,11 +136,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resp_flag   = context.user_data["resp_map"].get(uid, "").strip()
     user_name   = context.user_data["name"]
 
-    # — Назад —
+    # Назад
     if text == "🔙 Назад":
-        if step in ("AWAIT_TP_INPUT", "DISAMBIGUOUS",
-                    "NOTIFY_AWAIT_TP", "NOTIFY_DISAMBIGUOUS",
-                    "NOTIFY_AWAIT_VL", "NOTIFY_WAIT_GEO"):
+        if step in (
+            "AWAIT_TP_INPUT", "DISAMBIGUOUS",
+            "NOTIFY_AWAIT_TP", "NOTIFY_DISAMBIGUOUS",
+            "NOTIFY_AWAIT_VL", "NOTIFY_WAIT_GEO"
+        ):
             context.user_data["step"] = "BRANCH_SELECTED"
             await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
             return
@@ -146,7 +154,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Выберите опцию:", reply_markup=build_initial_kb(vis_flag))
         return
 
-    # — INIT —
+    # INIT
     if step == "INIT":
         if text == "📞 Телефоны провайдеров":
             context.user_data["step"] = "VIEW_PHONES"
@@ -158,9 +166,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         flag = vis_flag.strip().upper()
-        allowed = (["⚡ Россети ЮГ", "⚡ Россети Кубань"] if flag=="ALL"
-                   else ["⚡ Россети ЮГ"] if flag=="UG"
-                   else ["⚡ Россети Кубань"])
+        if flag == "ALL":
+            allowed = ["⚡ Россети ЮГ", "⚡ Россети Кубань"]
+        elif flag == "UG":
+            allowed = ["⚡ Россети ЮГ"]
+        else:
+            allowed = ["⚡ Россети Кубань"]
 
         if text in allowed:
             selected_net = text.replace("⚡ ", "")
@@ -179,10 +190,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # — NETWORK_SELECTED —
+    # NETWORK_SELECTED
     if step == "NETWORK_SELECTED":
         selected_net = context.user_data["selected_net"]
-        allowed = [branch_user] if branch_user!="All" else list(BRANCH_URLS[selected_net].keys())
+        allowed = [branch_user] if branch_user != "All" else list(BRANCH_URLS[selected_net].keys())
         if text in allowed:
             context.user_data.update({
                 "step":           "BRANCH_SELECTED",
@@ -196,7 +207,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # — BRANCH_SELECTED —
+    # BRANCH_SELECTED
     if step == "BRANCH_SELECTED":
         if text == "🔍 Поиск по ТП":
             context.user_data["step"] = "AWAIT_TP_INPUT"
@@ -211,140 +222,168 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return
 
-    # — AWAIT_TP_INPUT —
+    # AWAIT_TP_INPUT
     if step == "AWAIT_TP_INPUT":
         selected_net   = context.user_data["selected_net"]
         current_branch = context.user_data["current_branch"]
         url = BRANCH_URLS[selected_net][current_branch]
         df = pd.read_csv(normalize_sheet_url(url))
-        if res_user!="All":
-            norm=lambda s:re.sub(r'\W','',str(s).upper())
-            df = df[df["РЭС"].apply(norm)==norm(res_user)]
-        df.columns=df.columns.str.strip()
-        df["D_UP"]=df["Наименование ТП"].str.upper().str.replace(r'\W','',regex=True)
+        if res_user != "All":
+            norm = lambda s: re.sub(r'\W','', str(s).upper())
+            df = df[df["РЭС"].apply(norm) == norm(res_user)]
+        df.columns = df.columns.str.strip()
+        df["D_UP"] = df["Наименование ТП"].str.upper().str.replace(r'\W','', regex=True)
 
-        q=re.sub(r'\W','',text.upper())
-        found=df[df["D_UP"].str.contains(q,na=False)]
+        q = re.sub(r'\W','', text.upper())
+        found = df[df["D_UP"].str.contains(q, na=False)]
         if found.empty:
             await update.message.reply_text("🔍 Нет данных. Повторите:", reply_markup=kb_back)
             return
 
-        unique_tp=found["Наименование ТП"].unique().tolist()
-        if len(unique_tp)>1:
+        unique_tp = found["Наименование ТП"].unique().tolist()
+        if len(unique_tp) > 1:
             context.user_data.update({"step":"DISAMBIGUOUS","ambiguous_df":found})
-            kb=ReplyKeyboardMarkup([[tp] for tp in unique_tp]+[["🔙 Назад"]],resize_keyboard=True)
-            await update.message.reply_text("Выберите ТП:",reply_markup=kb)
+            kb = ReplyKeyboardMarkup([[tp] for tp in unique_tp] + [["🔙 Назад"]], resize_keyboard=True)
+            await update.message.reply_text("Выберите ТП:", reply_markup=kb)
             return
 
-        tp_sel=unique_tp[0]
-        details=found[found["Наименование ТП"]==tp_sel]
-        cnt=len(details); rname=details.iloc[0]["РЭС"]
-        await update.message.reply_text(f"{rname}, {tp_sel} ({cnt}) ВОЛС с договором аренды.\nВыберите действие:",reply_markup=kb_actions)
-        for _,r in details.iterrows():
-            await update.message.reply_text(f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\nОпоры: {r['Опоры']}\nПровайдер: {r.get('Наименование Провайдера','')}",reply_markup=kb_actions)
-        context.user_data["step"]="BRANCH_SELECTED"
+        tp_sel = unique_tp[0]
+        details = found[found["Наименование ТП"] == tp_sel]
+        cnt = len(details)
+        res_name = details.iloc[0]["РЭС"]
+        await update.message.reply_text(
+            f"{res_name}, {tp_sel} ({cnt}) ВОЛС с договором аренды.\nВыберите действие:",
+            reply_markup=kb_actions
+        )
+        for _, r in details.iterrows():
+            await update.message.reply_text(
+                f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
+                f"Опоры: {r['Опоры']}\n"
+                f"Провайдер: {r.get('Наименование Провайдера','')}",
+                reply_markup=kb_actions
+            )
+        context.user_data["step"] = "BRANCH_SELECTED"
         return
 
-    # — DISAMBIGUOUS —
-    if step=="DISAMBIGUOUS":
-        if text=="🔙 Назад":
-            context.user_data["step"]="AWAIT_TP_INPUT"
-            await update.message.reply_text("Введите номер ТП:",reply_markup=kb_back)
+    # DISAMBIGUOUS
+    if step == "DISAMBIGUOUS":
+        if text == "🔙 Назад":
+            context.user_data["step"] = "AWAIT_TP_INPUT"
+            await update.message.reply_text("Введите номер ТП:", reply_markup=kb_back)
             return
-        df_amb=context.user_data["ambiguous_df"]
+        df_amb = context.user_data["ambiguous_df"]
         if text in df_amb["Наименование ТП"].unique():
-            details=df_amb[df_amb["Наименование ТП"]==text]
-            cnt=len(details); rname=details.iloc[0]["РЭС"]
-            await update.message.reply_text(f"{rname}, {text} ({cnt}) ВОЛС с договором аренды.\nВыберите действие:",reply_markup=kb_actions)
-            for _,r in details.iterrows():
-                await update.message.reply_text(f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\nОпоры: {r['Опоры']}\nПровайдер: {r.get('Наименование Провайдера','')}",reply_markup=kb_actions)
-            context.user_data["step"]="BRANCH_SELECTED"
+            details = df_amb[df_amb["Наименование ТП"] == text]
+            cnt = len(details)
+            res_name = details.iloc[0]["РЭС"]
+            await update.message.reply_text(
+                f"{res_name}, {text} ({cnt}) ВОЛС с договором аренды.\nВыберите действие:",
+                reply_markup=kb_actions
+            )
+            for _, r in details.iterrows():
+                await update.message.reply_text(
+                    f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
+                    f"Опоры: {r['Опоры']}\n"
+                    f"Провайдер: {r.get('Наименование Провайдера','')}",
+                    reply_markup=kb_actions
+                )
+            context.user_data["step"] = "BRANCH_SELECTED"
         return
 
-    # — NOTIFY_AWAIT_TP —
-    if step=="NOTIFY_AWAIT_TP":
-        dfn=pd.read_csv(normalize_sheet_url(NOTIFY_SHEET_URL))
-        dfn.columns=dfn.columns.str.strip()
-        dfn["D_UP_TP"]=dfn["Наименование ТП"].str.upper().str.replace(r"\W","",regex=True)
-        q=re.sub(r"\W","",text.upper())
-        found=dfn[dfn["D_UP_TP"].str.contains(q,na=False)]
+    # NOTIFY_AWAIT_TP
+    if step == "NOTIFY_AWAIT_TP":
+        current_branch = context.user_data["current_branch"]
+        sheet_url = NOTIFY_URLS.get(current_branch, "")
+        dfn = pd.read_csv(normalize_sheet_url(sheet_url))
+        dfn.columns = dfn.columns.str.strip()
+        dfn["D_UP_TP"] = dfn["Наименование ТП"].str.upper().str.replace(r"\W","", regex=True)
+        q = re.sub(r"\W","", text.upper())
+        found = dfn[dfn["D_UP_TP"].str.contains(q, na=False)]
         if found.empty:
-            await update.message.reply_text("🔔 Не найдено ТП. Повторите:",reply_markup=kb_back)
+            await update.message.reply_text("🔔 Не найдено ТП. Повторите:", reply_markup=kb_back)
             return
-        ulist=found["Наименование ТП"].unique().tolist()
-        if len(ulist)>1:
+        ulist = found["Наименование ТП"].unique().tolist()
+        if len(ulist) > 1:
             context.user_data.update({"step":"NOTIFY_DISAMBIGUOUS","notify_df":found})
-            kb=ReplyKeyboardMarkup([[tp] for tp in ulist]+[["🔙 Назад"]],resize_keyboard=True)
-            await update.message.reply_text("Выберите ТП для уведомления:",reply_markup=kb)
+            kb = ReplyKeyboardMarkup([[tp] for tp in ulist] + [["🔙 Назад"]], resize_keyboard=True)
+            await update.message.reply_text("Выберите ТП для уведомления:", reply_markup=kb)
             return
-        tp_sel=ulist[0]
-        context.user_data["notify_tp"]=tp_sel
-        df_tp=found[found["Наименование ТП"]==tp_sel]
-        context.user_data["notify_df"]=df_tp
-        vls=df_tp["Наименование ВЛ"].unique().tolist()
-        context.user_data["step"]="NOTIFY_AWAIT_VL"
-        kb=ReplyKeyboardMarkup([[vl] for vl in vls]+[["🔙 Назад"]],resize_keyboard=True)
-        await update.message.reply_text("Выберите ВЛ для уведомления:",reply_markup=kb)
+        tp_sel = ulist[0]
+        context.user_data["notify_tp"] = tp_sel
+        df_tp = found[found["Наименование ТП"] == tp_sel]
+        context.user_data["notify_df"] = df_tp
+        vls = df_tp["Наименование ВЛ"].unique().tolist()
+        context.user_data["step"] = "NOTIFY_AWAIT_VL"
+        kb = ReplyKeyboardMarkup([[vl] for vl in vls] + [["🔙 Назад"]], resize_keyboard=True)
+        await update.message.reply_text("Выберите ВЛ для уведомления:", reply_markup=kb)
         return
 
-    # — NOTIFY_DISAMBIGUOUS —
-    if step=="NOTIFY_DISAMBIGUOUS":
-        if text=="🔙 Назад":
-            context.user_data["step"]="NOTIFY_AWAIT_TP"
-            await update.message.reply_text("Введите номер ТП:",reply_markup=kb_back)
+    # NOTIFY_DISAMBIGUOUS
+    if step == "NOTIFY_DISAMBIGUOUS":
+        if text == "🔙 Назад":
+            context.user_data["step"] = "NOTIFY_AWAIT_TP"
+            await update.message.reply_text("Введите номер ТП для уведомления:", reply_markup=kb_back)
             return
-        df_tp=context.user_data["notify_df"]
+        df_tp = context.user_data["notify_df"]
         if text in df_tp["Наименование ТП"].unique():
-            df_sel=df_tp[df_tp["Наименование ТП"]==text]
-            context.user_data["notify_tp"]=text
-            context.user_data["notify_df"]=df_sel
-            vls=df_sel["Наименование ВЛ"].unique().tolist()
-            context.user_data["step"]="NOTIFY_AWAIT_VL"
-            kb=ReplyKeyboardMarkup([[vl] for vl in vls]+[["🔙 Назад"]],resize_keyboard=True)
-            await update.message.reply_text("Выберите ВЛ для уведомления:",reply_markup=kb)
+            df_sel = df_tp[df_tp["Наименование ТП"] == text]
+            context.user_data["notify_tp"] = text
+            context.user_data["notify_df"] = df_sel
+            vls = df_sel["Наименование ВЛ"].unique().tolist()
+            context.user_data["step"] = "NOTIFY_AWAIT_VL"
+            kb = ReplyKeyboardMarkup([[vl] for vl in vls] + [["🔙 Назад"]], resize_keyboard=True)
+            await update.message.reply_text("Выберите ВЛ для уведомления:", reply_markup=kb)
         return
 
-    # — NOTIFY_AWAIT_VL —
-    if step=="NOTIFY_AWAIT_VL":
-        if text=="🔙 Назад":
-            context.user_data["step"]="NOTIFY_AWAIT_TP"
-            await update.message.reply_text("Введите номер ТП:",reply_markup=kb_back)
+    # NOTIFY_AWAIT_VL
+    if step == "NOTIFY_AWAIT_VL":
+        if text == "🔙 Назад":
+            context.user_data["step"] = "NOTIFY_AWAIT_TP"
+            await update.message.reply_text("Введите номер ТП для уведомления:", reply_markup=kb_back)
             return
-        df_tp=context.user_data["notify_df"]
+        df_tp = context.user_data["notify_df"]
         if text not in df_tp["Наименование ВЛ"].unique():
-            await update.message.reply_text("Выберите ВЛ из списка:",reply_markup=kb_back)
+            await update.message.reply_text("Выберите ВЛ из списка:", reply_markup=kb_back)
             return
-        context.user_data["notify_vl"]=text
-        context.user_data["notify_res"]=df_tp.iloc[0]["РЭС"]
-        context.user_data["step"]="NOTIFY_WAIT_GEO"
-        await update.message.reply_text("Отправьте геолокацию:",reply_markup=kb_request_location)
+        context.user_data["notify_vl"]  = text
+        context.user_data["notify_res"] = df_tp.iloc[0]["РЭС"]
+        context.user_data["step"]       = "NOTIFY_WAIT_GEO"
+        await update.message.reply_text("Отправьте геолокацию:", reply_markup=kb_request_location)
         return
 
-# — Обработка геолокации —
+# Обработка геолокации
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("step")!="NOTIFY_WAIT_GEO":
+    if context.user_data.get("step") != "NOTIFY_WAIT_GEO":
         return
-    loc=update.message.location
-    sender=context.user_data["name"]
-    tp=context.user_data["notify_tp"]
-    vl=context.user_data["notify_vl"]
-    res=context.user_data["notify_res"]
-    _,_,_,_,resp_map2=load_zones()
-    recips=[u for u,r in resp_map2.items() if r==res]
-    text=f"🔔 Уведомление от {sender}, {res} РЭС, {tp}, {vl} – Найден бездоговорной ВОЛС"
+    loc    = update.message.location
+    sender = context.user_data["name"]
+    tp     = context.user_data["notify_tp"]
+    vl     = context.user_data["notify_vl"]
+    res    = context.user_data["notify_res"]
+    _,_,_,_,resp_map2 = load_zones()
+    recips = [u for u,r in resp_map2.items() if r == res]
+    notif_text = (
+        f"🔔 Уведомление от {sender}, {res} РЭС, {tp}, {vl} – Найден бездоговорной ВОЛС"
+    )
     for cid in recips:
-        await context.bot.send_message(chat_id=cid, text=text)
+        await context.bot.send_message(chat_id=cid, text=notif_text)
         await context.bot.send_location(chat_id=cid, latitude=loc.latitude, longitude=loc.longitude)
-        await context.bot.send_message(chat_id=cid, text=f"📍 Широта:{loc.latitude:.6f},Долгота:{loc.longitude:.6f}")
-    await update.message.reply_text(f"✅ Отправлено: {', '.join(map(str,recips))}",reply_markup=kb_actions)
-    context.user_data["step"]="BRANCH_SELECTED"
+        await context.bot.send_message(
+            chat_id=cid,
+            text=f"📍 Широта: {loc.latitude:.6f}, Долгота: {loc.longitude:.6f}"
+        )
+    await update.message.reply_text(
+        f"✅ Уведомление отправлено: {', '.join(map(str, recips))}",
+        reply_markup=kb_actions
+    )
+    context.user_data["step"] = "BRANCH_SELECTED"
 
-# — Регистрируем хендлеры —
+# Регистрируем хендлеры
 application.add_handler(CommandHandler("start", start_line))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 application.add_handler(MessageHandler(filters.LOCATION, location_handler))
 
-# — Запуск вебхука —
+# Запуск webhook
 if __name__ == "__main__":
     threading.Thread(target=lambda: requests.get(f"{SELF_URL}/webhook"), daemon=True).start()
     application.run_webhook(
