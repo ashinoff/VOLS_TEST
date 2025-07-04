@@ -1,12 +1,13 @@
 # zones.py
 
 import re
-import requests
 import pandas as pd
+import requests
 from io import StringIO
 from config import ZONES_CSV_URL
 
 def normalize_sheet_url(url: str) -> str:
+    # (ваш существующий код нормализации URL)
     if 'output=csv' in url or '/export' in url or url.endswith('.csv'):
         return url
     m = re.search(r'/d/e/([\w-]+)/', url)
@@ -22,27 +23,41 @@ def normalize_sheet_url(url: str) -> str:
 
 def load_zones():
     """
-    Возвращает пять словарей:
-      vis_map[uid]  = 'All'/'RU'/'RK'
-      bz[uid]       = филиал
-      rz[uid]       = РЭС
-      names[uid]    = ФИО
-      resp_map[uid] = ответственный (строка) или "" если пусто
+    Возвращает 5 словарей:
+      vis_map[uid]       = видимость (All/UG/RK)
+      raw_branch_map[uid]= «сырое» имя филиала из колонки B
+      res_map[uid]       = РЭС из колонки C
+      names[uid]         = ФИО из колонки E
+      resp_map[uid]      = ответственный из колонки F (или "")
     """
-    r = requests.get(normalize_sheet_url(ZONES_CSV_URL), timeout=10)
+    url = normalize_sheet_url(ZONES_CSV_URL)
+    r = requests.get(url, timeout=10)
     r.raise_for_status()
-    df = pd.read_csv(StringIO(r.content.decode('utf-8-sig')),
-                     header=None, skiprows=1)
-    vis_map, bz, rz, names, resp_map = {}, {}, {}, {}, {}
+    df = pd.read_csv(StringIO(r.content.decode('utf-8-sig')), header=None, skiprows=1)
+
+    vis_map = {}
+    raw_branch_map = {}
+    res_map = {}
+    names = {}
+    resp_map = {}
+
     for _, row in df.iterrows():
         try:
+            # в колонке D у вас ID пользователя
             uid = int(row[3])
-        except:
+        except Exception:
             continue
-        vis_map[uid]  = str(row[0]).strip()
-        bz[uid]       = str(row[1]).strip()
-        rz[uid]       = str(row[2]).strip()
-        names[uid]    = str(row[4]).strip()
-        val = row[5]
-        resp_map[uid] = "" if pd.isna(val) else str(val).strip()
-    return vis_map, bz, rz, names, resp_map
+
+        vis_map[uid]        = str(row[0]).strip()
+        raw_branch_map[uid] = str(row[1]).strip()
+        res_map[uid]        = str(row[2]).strip()
+        names[uid]          = str(row[4]).strip()
+
+        # колонка F может быть пустой или NaN
+        raw_resp = row[5] if 5 in row.index else None
+        if pd.isna(raw_resp):
+            resp_map[uid] = ""
+        else:
+            resp_map[uid] = str(raw_resp).strip()
+
+    return vis_map, raw_branch_map, res_map, names, resp_map
