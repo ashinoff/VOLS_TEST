@@ -50,7 +50,7 @@ BRANCH_KEY_MAP = {
 app = Flask(__name__)
 application = ApplicationBuilder().token(TOKEN).build()
 
-# Создаем файлы-логи, если их нет
+# Инициализация CSV-файлов для логов уведомлений
 for lf in (NOTIFY_LOG_FILE_UG, NOTIFY_LOG_FILE_RK):
     if not os.path.exists(lf):
         with open(lf, "w", newline="", encoding="utf-8") as f:
@@ -61,7 +61,7 @@ for lf in (NOTIFY_LOG_FILE_UG, NOTIFY_LOG_FILE_RK):
                 "Timestamp","Coordinates"
             ])
 
-# Общие клавиатуры
+# Клавиатуры
 kb_back = ReplyKeyboardMarkup([["🔙 Назад"]], resize_keyboard=True)
 kb_actions = ReplyKeyboardMarkup(
     [["🔍 Поиск по ТП"], ["🔔 Отправить уведомление"], ["🔙 Назад"]],
@@ -122,7 +122,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === TEXT handler ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-
     if "step" not in context.user_data:
         return await start_cmd(update, context)
 
@@ -230,7 +229,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         branch = context.user_data["branch"]
         url    = BRANCH_URLS[net].get(branch,"").strip()
         if not url:
-            await update.message.reply_text(f"⚠️ URL для филиала «{branch}» не настроен.", reply_markup=kb_back)
+            await update.message.reply_text(f"⚠️ URL для «{branch}» не настроен.", reply_markup=kb_back)
             context.user_data["step"] = "BRANCH"
             return
         try:
@@ -314,10 +313,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tp = ulist[0]
         context.user_data["tp"] = tp
         subset = found[found["Наименование ТП"]==tp]
-        context.user_data["vl_df"] = subset
-        context.user_data["step"] = "NOTIFY_VL"
+        context.user_data["vl_df"]     = subset
+        context.user_data["notify_res"] = subset.iloc[0]["РЭС"]  # <-- сохраняем РЭС ТП
+        context.user_data["step"]        = "NOTIFY_VL"
         vls = subset["Наименование ВЛ"].unique().tolist()
-        kb = ReplyKeyboardMarkup([[vl] for vl in vls] + [["🔙 Назад"]], resize_keyboard=True)
+        kb  = ReplyKeyboardMarkup([[vl] for vl in vls] + [["🔙 Назад"]], resize_keyboard=True)
         await update.message.reply_text("Выберите ВЛ для уведомления:", reply_markup=kb)
         return
 
@@ -332,10 +332,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["tp"] = text
         subset = found[found["Наименование ТП"]==text]
-        context.user_data["vl_df"] = subset
-        context.user_data["step"] = "NOTIFY_VL"
+        context.user_data["vl_df"]     = subset
+        context.user_data["notify_res"] = subset.iloc[0]["РЭС"]  # <-- сохраняем РЭС ТП
+        context.user_data["step"]        = "NOTIFY_VL"
         vls = subset["Наименование ВЛ"].unique().tolist()
-        kb = ReplyKeyboardMarkup([[vl] for vl in vls] + [["🔙 Назад"]], resize_keyboard=True)
+        kb  = ReplyKeyboardMarkup([[vl] for vl in vls] + [["🔙 Назад"]], resize_keyboard=True)
         await update.message.reply_text("Выберите ВЛ для уведомления:", reply_markup=kb)
         return
 
@@ -348,7 +349,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subset = context.user_data["vl_df"]
         if text not in subset["Наименование ВЛ"].unique():
             return
-        context.user_data["vl"] = text
+        context.user_data["vl"]   = text
         context.user_data["step"] = "NOTIFY_GEO"
         await update.message.reply_text("Пожалуйста, отправьте геолокацию:", reply_markup=kb_request_location)
         return
@@ -357,30 +358,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("step") != "NOTIFY_GEO":
         return
-    loc = update.message.location
-    tp  = context.user_data["tp"]
-    vl  = context.user_data["vl"]
-    resname = context.user_data["res_user"]
-    sender  = context.user_data["name"]
+    loc       = update.message.location
+    tp        = context.user_data["tp"]
+    vl        = context.user_data["vl"]
+    res_tp    = context.user_data["notify_res"]    # используем РЭС из TP
+    sender    = context.user_data["name"]
     _,_,_,names,resp_map = load_zones()
 
-    # теперь сравнение без учёта регистра и пустые строки отфильтровываем
-    recips = [
-        u for u,r in resp_map.items()
-        if r and r.strip().lower() == resname.strip().lower()
+    # находим тех, у кого в колонке F тот же РЭС
+    recipients = [
+        uid for uid, r in resp_map.items()
+        if r and r.strip().lower() == res_tp.strip().lower()
     ]
 
-    msg  = f"🔔 Уведомление от {sender}, {resname} РЭС, {tp}, {vl} – Найден бездоговорной ВОЛС"
-    fpath = NOTIFY_LOG_FILE_UG if context.user_data["net"]=="Россети ЮГ" else NOTIFY_LOG_FILE_RK
+    msg   = f"🔔 Уведомление от {sender}, {res_tp} РЭС, {tp}, {vl} – Найден бездоговорной ВОЛС"
+    log_f = NOTIFY_LOG_FILE_UG if context.user_data["net"]=="Россети ЮГ" else NOTIFY_LOG_FILE_RK
 
-    for cid in recips:
+    for cid in recipients:
         await context.bot.send_message(cid, msg)
         await context.bot.send_location(cid, loc.latitude, loc.longitude)
         await context.bot.send_message(cid, f"📍 Широта: {loc.latitude:.6f}, Долгота: {loc.longitude:.6f}")
-        with open(fpath, "a", newline="", encoding="utf-8") as f:
+        with open(log_f, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
                 context.user_data["branch"],
-                resname,
+                res_tp,
                 update.effective_user.id,
                 sender,
                 cid,
@@ -389,15 +390,15 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{loc.latitude:.6f},{loc.longitude:.6f}"
             ])
 
-    if recips:
-        fio_list = [names[c] for c in recips]
+    if recipients:
+        names_list = [names[c] for c in recipients]
         await update.message.reply_text(
-            f"✅ Уведомление отправлено ответственным: {', '.join(fio_list)}",
+            f"✅ Уведомление отправлено: {', '.join(names_list)}",
             reply_markup=kb_actions
         )
     else:
         await update.message.reply_text(
-            f"⚠ Ответственный на {resname} РЭС не назначен.",
+            f"⚠ Ответственный на {res_tp} РЭС не назначен.",
             reply_markup=kb_actions
         )
 
