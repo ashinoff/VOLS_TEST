@@ -76,7 +76,10 @@ kb_request_location = ReplyKeyboardMarkup(
 
 def build_initial_kb(vis_flag: str, res_flag: str) -> ReplyKeyboardMarkup:
     """
-    Первичное меню: кнопки по сетям, телефоны, отчёт (только если res_flag == 'All')
+    Первичное меню:
+      - кнопки сетей по vis_flag
+      - телефоны провайдеров
+      - отчёт (только если res_flag == 'ALL')
     """
     f = vis_flag.strip().upper()
     if f == "ALL":
@@ -87,13 +90,17 @@ def build_initial_kb(vis_flag: str, res_flag: str) -> ReplyKeyboardMarkup:
         nets = ["⚡ Россети Кубань"]
     buttons = [[n] for n in nets]
     buttons.append(["📞 Телефоны провайдеров"])
+    # кнопку «Сформировать отчёт» показываем только если пользователь имеет res_flag == "ALL"
     if res_flag.strip().upper() == "ALL":
         buttons.append(["📝 Сформировать отчёт"])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def build_report_kb(vis_flag: str) -> ReplyKeyboardMarkup:
     """
-    Меню отчётов: логи по сетям (в зависимости от vis_flag), экспорт контрагентов, назад
+    Меню отчётов:
+      - логи ЮГ/Кубань по vis_flag
+      - выгрузка контрагентов
+      - назад
     """
     f = vis_flag.strip().upper()
     rows = []
@@ -143,12 +150,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res_user    = context.user_data["res_user"]
     name        = context.user_data["name"]
 
-    # «Назад»
+    # Кнопка «Назад»
     if text == "🔙 Назад":
+        # если мы в глубоком шаге поиска/уведомлений — возвращаем на BRANCH
         if step in ("AWAIT_TP_INPUT","DISAMB","NOTIFY_AWAIT_TP","NOTIFY_DISAMB","NOTIFY_VL"):
             context.user_data["step"] = "BRANCH"
             await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
             return
+        # если мы были в меню отчётов — возвращаем в INIT
         if step == "REPORT_MENU":
             context.user_data["step"] = "INIT"
             await update.message.reply_text(
@@ -156,6 +165,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=build_initial_kb(vis_flag, res_user)
             )
             return
+        # в остальных случаях возвращаем в INIT
         context.user_data["step"] = "INIT"
         await update.message.reply_text(
             "Выберите опцию:",
@@ -197,6 +207,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # перешли к выбору филиала
         selected_net = text.replace("⚡ ","")
         context.user_data.update({"step":"NET","net":selected_net})
         if branch_user != "All":
@@ -207,9 +218,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Выберите филиал:", reply_markup=kb)
         return
 
-    # REPORT_MENU (с форматированием заголовка и авто-шириной)
+    # REPORT_MENU
     if step == "REPORT_MENU":
         if text in ("📊 Логи Россети ЮГ", "📊 Логи Россети Кубань"):
+            # выгрузка логов с форматированием заголовка и авто-шириной столбцов
             log_file = NOTIFY_LOG_FILE_UG if text.endswith("ЮГ") else NOTIFY_LOG_FILE_RK
             df = pd.read_csv(log_file)
             bio = BytesIO()
@@ -217,8 +229,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 df.to_excel(writer, index=False, sheet_name="Логи")
                 ws = writer.sheets["Логи"]
                 pink = PatternFill(fill_type="solid", start_color="FFF4F4", end_color="FFF4F4")
+                # покраска первой строки
                 for col_idx in range(1, len(df.columns) + 1):
                     ws.cell(row=1, column=col_idx).fill = pink
+                # авто-ширина
                 for idx, col in enumerate(df.columns, start=1):
                     max_len = max(df[col].astype(str).map(len).max(), len(col))
                     ws.column_dimensions[get_column_letter(idx)].width = max_len + 2
@@ -233,6 +247,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # если не распознано, вернуть выбор отчёта
         await update.message.reply_text(
             "📝 Выберите тип отчёта:",
             reply_markup=build_report_kb(vis_flag)
@@ -269,9 +284,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Введите номер ТП для уведомления:", reply_markup=kb_back)
             return
 
-    # Далее логика AWAIT_TP_INPUT, DISAMB, NOTIFY_*, location_handler без изменений...
+    # (далее — без изменений: AWAIT_TP_INPUT, DISAMB, NOTIFY_*, location_handler)
 
-# Обработчик геолокации (location_handler) без изменений
+# Обработчик геолокации (location_handler) остаётся без правок
 
 # Регистрируем хендлеры
 application.add_handler(CommandHandler("start", start_cmd))
