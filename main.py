@@ -260,7 +260,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📝 Выберите тип отчёта:", reply_markup=build_report_kb(vis_flag))
             return
 
-        if text == "📋 Выгрузить информацию по контрагентам":
+        if text == "📋 Выгрузить информацию по контрагентами":
             await update.message.reply_text("📋 Справочник контрагентов — скоро будет!", reply_markup=build_report_kb(vis_flag))
             return
 
@@ -300,9 +300,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---- AWAIT_TP_INPUT ----
     if step == "AWAIT_TP_INPUT":
-        selected_net   = context.user_data["selected_net"]
         current_branch = context.user_data["current_branch"]
-        df = pd.read_csv(normalize_sheet_url(BRANCH_URLS[selected_net][current_branch]))
+        df = pd.read_csv(normalize_sheet_url(
+            BRANCH_URLS[current_branch]
+        ))
         if res_user!="All":
             norm=lambda s:re.sub(r'\W','',str(s).upper())
             df = df[df["РЭС"].apply(norm)==norm(res_user)]
@@ -355,7 +356,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=kb_actions
             )
             for _,r in details.iterrows():
-                await update.message.reply_text(
+                await update.message_reply(
                     f"📍 ВЛ {r['Уровень напряжения']} {r['Наименование ВЛ']}\n"
                     f"Опоры: {r['Опоры']}\n"
                     f"Провайдер: {r.get('Наименование Провайдера','')}", reply_markup=kb_actions
@@ -399,7 +400,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["step"]="NOTIFY_AWAIT_TP"
             await update.message.reply_text("Введите номер ТП для уведомления:",reply_markup=kb_back)
             return
-        dfn = context.user_data["notify_df"]
+        dfn = context	user_data["notify_df"]
         if text in dfn["Наименование ТП"].unique():
             df_tp = dfn[dfn["Наименование ТП"]==text]
             context.user_data["notify_tp"] = text
@@ -407,41 +408,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             vls = df_tp["Наименование ВЛ"].unique().tolist()
             context.user_data["step"]="NOTIFY_AWAIT_VL"
             kb = ReplyKeyboardMarkup([[vl] for vl in vls]+[["🔙 Назад"]],resize_keyboard=True)
-            await update.message.reply_text("Выберите ВЛ для уведомления:",reply_markup=kb)
-        return
-
-    # ---- NOTIFY_AWAIT_VL ----
-    if step == "NOTIFY_AWAIT_VL":
-        if text=="🔙 Назад":
-            context.user_data["step"]="NOTIFY_AWAIT_TP"
-            await update.message.reply_text("Введите номер ТП для уведомления:",reply_markup=kb_back)
-            return
-        df_tp = context.user_data["notify_df"]
-        if text not in df_tp["Наименование ВЛ"].unique():
-            await update.message.reply_text("Выберите ВЛ из списка:",reply_markup=kb_back)
-            return
-        context.user_data["notify_vl"]  = text
-        context.user_data["notify_res"] = df_tp.iloc[0]["РЭС"]
-        context.user_data["step"]       = "NOTIFY_WAIT_GEO"
-        await update.message.reply_text("📍 Отправьте геолокацию:", reply_markup=kb_request_location)
+            await update	message.reply_text("Выберите ВЛ для уведомления:",	reply_markup=kb)
         return
 
 # === LOCATION handler ===
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("step")!="NOTIFY_WAIT_GEO":
+    if context	user_data.get("step")!="NOTIFY_WAIT_GEO":
         return
     loc    = update.message.location
-    sender = context.user_data["name"]
-    tp     = context.user_data["notify_tp"]
-    vl     = context.user_data["notify_vl"]
-    res    = context.user_data["notify_res"]
+    sender = context	user_data["name"]
+    tp     = context	user_data["notify_tp"]
+    vl     = context	user_data["notify_vl"]
+    res    = context	user_data["notify_res"]
     _,_,_,names_map,resp_map2 = load_zones()
     recips = [u for u,r in resp_map2.items() if r==res]
     notif_text = f"🔔 Уведомление от {sender}, {res} РЭС, {tp}, {vl} – Найден бездоговорной ВОЛС"
 
-    filial = context.user_data["branch_user"]
-    network= context.user_data["selected_net"]  # "Россети ЮГ" или "Россети Кубань"
-    log_file = NOTIFY_LOG_FILE_UG if network=="Россети ЮГ" else NOTIFY_LOG_FILE_RK
+    filial  = context	user_data["branch_user"]
+    network = context	user_data["selected_net"]
+    log_file= NOTIFY_LOG_FILE_UG if network=="Россети ЮГ" else NOTIFY_LOG_FILE_RK
 
     for cid in recips:
         await context.bot.send_message(chat_id=cid, text=notif_text)
