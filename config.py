@@ -1,51 +1,84 @@
-# config.py
-
 import os
+from urllib.parse import urlparse
 
 # — Основные настройки —
-TOKEN         = os.getenv("TOKEN", "")
-SELF_URL      = os.getenv("SELF_URL", "").rstrip("/")
-PORT          = int(os.getenv("PORT", "5000"))
-ZONES_CSV_URL = os.getenv("ZONES_CSV_URL", "")
+TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    raise ValueError("Переменная окружения TOKEN не задана")
+SELF_URL = os.getenv("SELF_URL", "").rstrip("/")
+PORT = int(os.getenv("PORT", "5000"))
+ZONES_CSV_URL = os.getenv("ZONES_CSV_URL")
+if not ZONES_CSV_URL:
+    raise ValueError("Переменная окружения ZONES_CSV_URL не задана")
+
+# — Проверка URL —
+def validate_url(url):
+    if not url:
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and parsed.netloc
+
+# — Нормализация названий филиалов —
+BRANCH_KEY_MAP = {
+    "Тимашевский": "Тимашевские ЭС",
+    "Усть-Лабинский": "Усть-Лабинские ЭС",
+    "Тихорецкий": "Тихорецкие ЭС",
+    "Сочинский": "Сочинские ЭС",
+    "Славянский": "Славянские ЭС",
+    "Ленинградский": "Ленинградские ЭС",
+    "Лабинский": "Лабинские ЭС",
+    "Краснодарский": "Краснодарские ЭС",
+    "Армавирский": "Армавирские ЭС",
+    "Адыгейский": "Адыгейские ЭС",
+    "Центральный": "Центральные ЭС",
+    "Западный": "Западные ЭС",
+    "Восточный": "Восточные ЭС",
+    "Южный": "Южные ЭС",
+    "Северо-Восточный": "Северо-Восточные ЭС",
+    "Юго-Восточный": "Юго-Восточные ЭС",
+    "Северный": "Северные ЭС",
+}
 
 # — URL-ы таблиц с данными по филиалам —
 BRANCH_URLS = {
     "Россети Кубань": {
-        "Юго-Западные ЭС":   os.getenv("YUGO_ZAPAD_ES_URL_RK",    ""),
-        "Усть-Лабинские ЭС": os.getenv("UST_LAB_ES_URL_RK",        ""),
-        "Тимашевские ЭС":    os.getenv("TIMASHEV_ES_URL_RK",       ""),
-        "Тихорецкие ЭС":     os.getenv("TIKHORETS_ES_URL_RK",      ""),
-        "Сочинские ЭС":      os.getenv("SOCH_ES_URL_RK",           ""),
-        "Славянские ЭС":     os.getenv("SLAV_ES_URL_RK",           ""),
-        "Ленинградские ЭС":  os.getenv("LENINGRAD_ES_URL_RK",      ""),
-        "Лабинские ЭС":      os.getenv("LABIN_ES_URL_RK",          ""),
-        "Краснодарские ЭС":  os.getenv("KRASN_ES_URL_RK",          ""),
-        "Армавирские ЭС":    os.getenv("ARMAVIR_ES_URL_RK",        ""),
-        "Адыгейские ЭС":     os.getenv("ADYGEA_ES_URL_RK",         ""),
+        BRANCH_KEY_MAP.get(raw_branch, raw_branch): os.getenv(f"{raw_branch.replace('-', '_').upper()}_ES_URL_RK", "")
+        for raw_branch in [
+            "Юго-Западный", "Усть-Лабинский", "Тимашевский", "Тихорецкий",
+            "Сочинский", "Славянский", "Ленинградский", "Лабинский",
+            "Краснодарский", "Армавирский", "Адыгейский"
+        ]
     },
     "Россети ЮГ": {
-        "Центральные ЭС":      os.getenv("CENTRAL_ES_URL_UG",       ""),
-        "Западные ЭС":         os.getenv("WEST_ES_URL_UG",          ""),
-        "Восточные ЭС":        os.getenv("EAST_ES_URL_UG",          ""),
-        "Южные ЭС":            os.getenv("SOUTH_ES_URL_UG",         ""),
-        "Юго-Западные ЭС":     os.getenv("YUGO_ZAPAD_ES_URL_UG",    ""),
-        "Северо-Восточные ЭС": os.getenv("NE_ES_URL_UG",            ""),
-        "Юго-Восточные ЭС":    os.getenv("SE_ES_URL_UG",            ""),
-        "Северные ЭС":         os.getenv("NORTH_ES_URL_UG",         ""),
+        BRANCH_KEY_MAP.get(raw_branch, raw_branch): os.getenv(f"{raw_branch.replace('-', '_').upper()}_ES_URL_UG", "")
+        for raw_branch in [
+            "Центральный", "Западный", "Восточный", "Южный",
+            "Юго-Западный", "Северо-Восточный", "Юго-Восточный", "Северный"
+        ]
     },
 }
 
-# — Справочники для уведомлений —
+# — Проверка URL в BRANCH_URLS —
+for net, branches in BRANCH_URLS.items():
+    for branch, url in branches.items():
+        if not validate_url(url):
+            print(f"Предупреждение: Неверный URL для {net} - {branch}: {url}")
+
+# — Справочники для уведомлений (только для теста) —
 NOTIFY_URLS = {
     "Россети Кубань": {
         "Тимашевские ЭС": os.getenv("TIMASHEV_ES_URL_RK_SP", ""),
-        # ... при необходимости добавьте другие
     },
     "Россети ЮГ": {
-        "Тимашевские ЭС": os.getenv("TIMASHEV_ES_URL_UG_SP", ""),
-        # ... и т.д.
+        "Тимашевские ЭС": "",  # Заглушка для ЮГ, так как используется только RK
     },
 }
+
+# — Проверка URL в NOTIFY_URLS —
+for net, branches in NOTIFY_URLS.items():
+    for branch, url in branches.items():
+        if url and not validate_url(url):
+            print(f"Предупреждение: Неверный URL уведомлений для {net} - {branch}: {url}")
 
 # — Логи уведомлений —
 NOTIFY_LOG_FILE_UG = os.getenv("NOTIFY_LOG_FILE_UG", "notify_log_ug.csv")
