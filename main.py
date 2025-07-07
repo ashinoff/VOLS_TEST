@@ -20,6 +20,12 @@ from telegram.ext import (
 )
 from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
+import logging
+
+# Настройка логирования для Render
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 from config import (
     TOKEN, SELF_URL, PORT,
     BRANCH_URLS, NOTIFY_URLS,
@@ -86,20 +92,33 @@ for lf in (NOTIFY_LOG_FILE_UG, NOTIFY_LOG_FILE_RK):
             ])
 
 async def get_cached_csv(context, url, cache_key, ttl=3600):
-    """Кэширует CSV-файлы с данными, чтобы минимизировать HTTP-запросы."""
+    """Кэширует CSV-файлы с данными, логирует ошибки."""
     if cache_key not in context.bot_data or context.bot_data[cache_key]["expires"] < time.time():
-        async with aiohttp.ClientSession() as session:
-            async with session.get(normalize_sheet_url(url), timeout=10) as response:
-                response.raise_for_status()
-                df = pd.read_csv(BytesIO(await response.read()))
-        context.bot_data[cache_key] = {"data": df, "expires": time.time() + ttl}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(normalize_sheet_url(url), timeout=10) as response:
+                    response.raise_for_status()
+                    df = pd.read_csv(BytesIO(await response.read()))
+            context.bot_data[cache_key] = {"data": df, "expires": time.time() + ttl}
+        except aiohttp.ClientError as e:
+            logger.error(f"Ошибка загрузки CSV по URL {url}: {e}")
+            raise
+        except pd.errors.EmptyDataError:
+            logger.error(f"CSV-файл пуст по URL {url}")
+            raise
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка загрузки CSV по URL {url}: {e}")
+            raise
     return context.bot_data[cache_key]["data"]
 
 async def log_notification(log_file, data):
     """Асинхронно записывает уведомления в лог-файл."""
-    async with aiofiles.open(log_file, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-        await f.write(writer.writerow(data))
+    try:
+        async with aiofiles.open(log_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+            await f.write(writer.writerow(data))
+    except Exception as e:
+        logger.error(f"Ошибка записи в лог {log_file}: {e}")
 
 # === /start ===
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,6 +127,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         vis_map, raw_branch_map, res_map, names, resp_map = await load_zones_cached(context)
     except Exception as e:
+        logger.error(f"Ошибка загрузки зон доступа для пользователя {uid}: {e}")
         await update.message.reply_text(f"⚠️ Ошибка загрузки зон доступа: {e}", reply_markup=kb_back)
         return
     if uid not in raw_branch_map:
@@ -115,7 +135,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     raw = raw_branch_map[uid]
-    branch_key = "All" if raw == "All" else raw  # Используем ключ из config.py
+    branch_key = "All" if raw == "All" else raw
     context.user_data.clear()
     context.user_data.update({
         "step": BotStep.BRANCH.value if branch_key != "All" else BotStep.INIT.value,
@@ -149,7 +169,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Обработчики шагов ===
 async def handle_init_step(update, context, text, vis_flag, res_user, name):
-    """Обрабатывает начальный шаг (выбор сети или действия)."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.INIT.value
         await update.message.reply_text(
@@ -194,7 +213,6 @@ async def handle_init_step(update, context, text, vis_flag, res_user, name):
     await update.message.reply_text("Выберите филиал:", reply_markup=kb)
 
 async def handle_net_step(update, context, text, vis_flag, res_user, name):
-    """Обрабатывает выбор филиала."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.INIT.value
         await update.message.reply_text(
@@ -218,7 +236,6 @@ async def handle_net_step(update, context, text, vis_flag, res_user, name):
     await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
 
 async def handle_branch_step(update, context, text, vis_flag, res_user, name):
-    """Обрабатывает выбор действия (поиск или уведомление)."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.NET.value if context.user_data["branch_user"] == "All" else BotStep.INIT.value
         if context.user_data["branch_user"] == "All":
@@ -241,7 +258,6 @@ async def handle_branch_step(update, context, text, vis_flag, res_user, name):
         return
 
 async def handle_await_tp_input_step(update, context, text, vis_flag, res_user, name):
-    """Обрабатывает ввод номера ТП для поиска."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.BRANCH.value
         await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
@@ -264,13 +280,8 @@ async def handle_await_tp_input_step(update, context, text, vis_flag, res_user, 
                 reply_markup=kb_back
             )
             return
-    except aiohttp.ClientError as e:
-        await update.message.reply_text(f"⚠️ Ошибка сети: {e}", reply_markup=kb_back)
-        return
-    except pd.errors.EmptyDataError:
-        await update.message.reply_text(f"⚠️ CSV-файл пуст", reply_markup=kb_back)
-        return
     except Exception as e:
+        logger.error(f"Ошибка загрузки данных для {net}/{branch}: {e}")
         await update.message.reply_text(f"⚠️ Ошибка загрузки данных: {e}", reply_markup=kb_back)
         return
 
@@ -310,7 +321,6 @@ async def handle_await_tp_input_step(update, context, text, vis_flag, res_user, 
     context.user_data["step"] = BotStep.BRANCH.value
 
 async def handle_disamb_step(update, context, text, vis_flag, res_user, name):
-    """Разрешает неоднозначность при выборе ТП."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.AWAIT_TP_INPUT.value
         await update.message.reply_text("Введите номер ТП (например, ТП-123):", reply_markup=kb_back)
@@ -333,7 +343,6 @@ async def handle_disamb_step(update, context, text, vis_flag, res_user, name):
     context.user_data["step"] = BotStep.BRANCH.value
 
 async def handle_notify_await_tp_step(update, context, text, vis_flag, res_user, name):
-    """Обрабатывает ввод номера ТП для уведомления."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.BRANCH.value
         await update.message.reply_text("Выберите действие:", reply_markup=kb_actions)
@@ -356,13 +365,8 @@ async def handle_notify_await_tp_step(update, context, text, vis_flag, res_user,
                 reply_markup=kb_back
             )
             return
-    except aiohttp.ClientError as e:
-        await update.message.reply_text(f"⚠️ Ошибка сети: {e}", reply_markup=kb_back)
-        return
-    except pd.errors.EmptyDataError:
-        await update.message.reply_text(f"⚠️ CSV-файл пуст", reply_markup=kb_back)
-        return
     except Exception as e:
+        logger.error(f"Ошибка загрузки уведомлений для {net}/{branch}: {e}")
         await update.message.reply_text(f"⚠️ Ошибка загрузки уведомлений: {e}", reply_markup=kb_back)
         return
 
@@ -392,7 +396,6 @@ async def handle_notify_await_tp_step(update, context, text, vis_flag, res_user,
     await update.message.reply_text("Выберите ВЛ для уведомления:", reply_markup=kb)
 
 async def handle_notify_disamb_step(update, context, text, vis_flag, res_user, name):
-    """Разрешает неоднозначность при выборе ТП для уведомления."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.NOTIFY_AWAIT_TP.value
         await update.message.reply_text("Введите номер ТП для уведомления (например, ТП-123):", reply_markup=kb_back)
@@ -410,7 +413,6 @@ async def handle_notify_disamb_step(update, context, text, vis_flag, res_user, n
     await update.message.reply_text("Выберите ВЛ для уведомления:", reply_markup=kb)
 
 async def handle_notify_vl_step(update, context, text, vis_flag, res_user, name):
-    """Обрабатывает выбор ВЛ для уведомления."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.NOTIFY_AWAIT_TP.value
         await update.message.reply_text("Введите номер ТП для уведомления (например, ТП-123):", reply_markup=kb_back)
@@ -423,7 +425,6 @@ async def handle_notify_vl_step(update, context, text, vis_flag, res_user, name)
     await update.message.reply_text("Пожалуйста, отправьте геолокацию:", reply_markup=kb_request_location)
 
 async def handle_report_menu_step(update, context, text, vis_flag, res_user, name):
-    """Обрабатывает меню отчётов."""
     if text == "🔙 Назад":
         context.user_data["step"] = BotStep.INIT.value
         await update.message.reply_text(
@@ -453,6 +454,7 @@ async def handle_report_menu_step(update, context, text, vis_flag, res_user, nam
             bio.seek(0)
             await update.message.reply_document(bio, filename="contractors.xlsx")
         except Exception as e:
+            logger.error(f"Ошибка выгрузки контрагентов для {net}/{branch}: {e}")
             await update.message.reply_text(
                 f"⚠️ Ошибка выгрузки контрагентов: {e}", reply_markup=build_report_kb(vis_flag)
             )
@@ -484,6 +486,7 @@ async def handle_report_menu_step(update, context, text, vis_flag, res_user, nam
                 f"⚠️ Лог-файл {log_file} не найден.", reply_markup=build_report_kb(vis_flag)
             )
         except Exception as e:
+            logger.error(f"Ошибка формирования отчёта из {log_file}: {e}")
             await update.message.reply_text(
                 f"⚠️ Ошибка формирования отчёта: {e}", reply_markup=build_report_kb(vis_flag)
             )
@@ -494,7 +497,6 @@ async def handle_report_menu_step(update, context, text, vis_flag, res_user, nam
 
 # === TEXT handler ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Маршрутизирует текстовые сообщения по шагам."""
     text = update.message.text.strip()
     if "step" not in context.user_data:
         await start_cmd(update, context)
@@ -502,6 +504,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         vis_map, raw_branch_map, res_map, names, resp_map = await load_zones_cached(context)
     except Exception as e:
+        logger.error(f"Ошибка загрузки зон для обработки текста: {e}")
         await update.message.reply_text(f"⚠️ Ошибка загрузки зон доступа: {e}", reply_markup=kb_back)
         return
     step = context.user_data["step"]
@@ -525,7 +528,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Обработчик геолокации ===
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает геолокацию для уведомлений."""
     if context.user_data.get("step") != BotStep.NOTIFY_GEO.value:
         return
     loc = update.message.location
@@ -543,17 +545,20 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"🔔 Уведомление от {sender}, {res_tp} РЭС, {tp}, {vl} – Найден бездоговорной ВОЛС"
     log_f = NOTIFY_LOG_FILE_UG if net == "Россети ЮГ" else NOTIFY_LOG_FILE_RK
     for cid in recipients:
-        await context.bot.send_message(cid, msg)
-        await context.bot.send_location(cid, loc.latitude, loc.longitude)
-        await context.bot.send_message(
-            cid, f"📍 Широта: {loc.latitude:.6f}, Долгота: {loc.longitude:.6f}"
-        )
-        await log_notification(log_f, [
-            branch, res_tp, update.effective_user.id, sender,
-            cid, context.user_data["resp_map"].get(cid, ""),
-            datetime.now(timezone.utc).isoformat(),
-            f"{loc.latitude:.6f},{loc.longitude:.6f}"
-        ])
+        try:
+            await context.bot.send_message(cid, msg)
+            await context.bot.send_location(cid, loc.latitude, loc.longitude)
+            await context.bot.send_message(
+                cid, f"📍 Широта: {loc.latitude:.6f}, Долгота: {loc.longitude:.6f}"
+            )
+            await log_notification(log_f, [
+                branch, res_tp, update.effective_user.id, sender,
+                cid, context.user_data["resp_map"].get(cid, ""),
+                datetime.now(timezone.utc).isoformat(),
+                f"{loc.latitude:.6f},{loc.longitude:.6f}"
+            ])
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления пользователю {cid}: {e}")
 
     if recipients:
         names_list = [context.user_data["resp_map"].get(c, "") for c in recipients]
@@ -575,16 +580,16 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_t
 application.add_handler(MessageHandler(filters.LOCATION, location_handler))
 
 if __name__ == "__main__":
-    if SELF_URL:
-        async def start_webhook():
-            """Инициирует вебхук для Render."""
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{SELF_URL}/webhook", timeout=10) as response:
-                    response.raise_for_status()
-        asyncio.run(start_webhook())
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="webhook",
-        webhook_url=f"{SELF_URL}/webhook"
-    )
+    try:
+        if SELF_URL:
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path="webhook",
+                webhook_url=f"{SELF_URL}/webhook"
+            )
+        else:
+            logger.warning("SELF_URL не настроен, запускаю в режиме polling")
+            application.run_polling()
+    except Exception as e:
+        logger.error(f"Ошибка запуска приложения: {e}")
