@@ -2,5 +2,4 @@ Flask>=2.0
 python-telegram-bot[webhooks]==22.2
 pandas>=1.0
 openpyxl
-aiohttp>=3.0  # Заменил requests для асинхронных запросов
-aiofiles>=0.5  # Для асинхронной работы с файлами
+requests>=2.0
