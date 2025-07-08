@@ -34,13 +34,14 @@ BRANCH_URLS = {
 NOTIFY_URLS = {
     "Россети Кубань": {
         "Тимашевские ЭС": os.getenv("TIMASHEV_ES_URL_RK_SP", "")
-        # добавьте по необходимости остальные СП-справочники
     },
     "Россети ЮГ": {
         "Тимашевские ЭС": os.getenv("TIMASHEV_ES_URL_UG_SP", "")
-        # добавьте по необходимости остальные СП-справочники
     },
 }
 
 NOTIFY_LOG_FILE_UG = os.getenv("NOTIFY_LOG_FILE_UG", "notify_log_ug.csv")
 NOTIFY_LOG_FILE_RK = os.getenv("NOTIFY_LOG_FILE_RK", "notify_log_rk.csv")
+
+# Папка, в которой лежат справочные файлы (монтируется с Google Drive)
+HELP_FOLDER = os.getenv("HELP_FOLDER", "")  # например "/mnt/data/help_files"
