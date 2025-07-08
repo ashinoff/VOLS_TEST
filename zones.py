@@ -20,27 +20,19 @@ def normalize_sheet_url(url: str) -> str:
 
 def load_zones():
     """
-    Возвращает 5 словарей:
-      vis_map[uid]    = 'All'/'UG'/'RK'
-      branch_map[uid] = название филиала (или 'All')
-      res_map[uid]    = название РЭС  (или 'All')
+    Возвращает пять словарей:
+      vis_map[uid]    = видимость (All/RK/UG)
+      branch_map[uid] = филиал или "All"
+      res_map[uid]    = РЭС или "All"
       names[uid]      = ФИО
-      resp_map[uid]   = признак ответственного (строка из колонки F или "")
-
-    Ожидаем CSV со столбцами:
-    A: видимость (All/RU/RK), B: Филиал, C: РЭС, D: Telegram ID, E: ФИО, F: Ответственный
+      resp_map[uid]   = признак получения уведомлений (из колонки F)
     """
     url = normalize_sheet_url(ZONES_CSV_URL)
     r   = requests.get(url, timeout=10)
     r.raise_for_status()
-    df  = pd.read_csv(StringIO(r.content.decode('utf-8-sig')), header=None)
+    df = pd.read_csv(StringIO(r.content.decode('utf-8-sig')), header=None, skiprows=1)
 
-    vis_map    = {}
-    branch_map = {}
-    res_map    = {}
-    names      = {}
-    resp_map   = {}
-
+    vis_map, branch_map, res_map, names, resp_map = {}, {}, {}, {}, {}
     for _, row in df.iterrows():
         try:
             uid = int(row[3])
@@ -50,7 +42,5 @@ def load_zones():
         branch_map[uid] = str(row[1]).strip()
         res_map[uid]    = str(row[2]).strip()
         names[uid]      = str(row[4]).strip()
-        raw_resp       = row[5]
-        resp_map[uid]   = str(raw_resp).strip() if pd.notna(raw_resp) else ""
-
+        resp_map[uid]   = str(row[5]).strip()
     return vis_map, branch_map, res_map, names, resp_map
