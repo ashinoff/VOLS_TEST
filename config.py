@@ -43,5 +43,5 @@ NOTIFY_URLS = {
 NOTIFY_LOG_FILE_UG = os.getenv("NOTIFY_LOG_FILE_UG", "notify_log_ug.csv")
 NOTIFY_LOG_FILE_RK = os.getenv("NOTIFY_LOG_FILE_RK", "notify_log_rk.csv")
 
-# Папка, в которой лежат справочные файлы (монтируется с Google Drive)
+# Папка со справочными файлами (картинки, PDF, docx и т.д.)
 HELP_FOLDER = os.getenv("HELP_FOLDER", "")  # например "/mnt/data/help_files"
