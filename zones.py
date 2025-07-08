@@ -19,14 +19,7 @@ def normalize_sheet_url(url: str) -> str:
     return url
 
 def load_zones():
-    """
-    Возвращает:
-      vis_map[uid]    — видимость сетей (All/RK/UG)
-      branch_map[uid] — филиал или All
-      res_map[uid]    — РЭС или All
-      names[uid]      — ФИО
-      resp_map[uid]   — пометка ответственного (колонка F)
-    """
+    """Возвращает пять словарей по user_id."""
     url = normalize_sheet_url(ZONES_CSV_URL)
     r = requests.get(url, timeout=10); r.raise_for_status()
     df = pd.read_csv(StringIO(r.content.decode('utf-8-sig')), header=None, skiprows=1)
