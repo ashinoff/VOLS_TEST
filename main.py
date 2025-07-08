@@ -13,8 +13,6 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler,
     MessageHandler, filters, ContextTypes,
 )
-from openpyxl.styles import PatternFill
-from openpyxl.utils import get_column_letter
 
 from config import (
     TOKEN, SELF_URL, PORT,
@@ -24,7 +22,7 @@ from config import (
 )
 from zones import normalize_sheet_url, load_zones
 
-# Сопоставление «сырых» имён филиалов в ключи BRANCH_URLS
+# Маппинг «сырого» имени филиала в ключ BRANCH_URLS
 BRANCH_KEY_MAP = {
     "Тимашевский":      "Тимашевские ЭС",
     "Усть-Лабинский":   "Усть-Лабинские ЭС",
@@ -48,11 +46,11 @@ BRANCH_KEY_MAP = {
 app = Flask(__name__)
 application = ApplicationBuilder().token(TOKEN).build()
 
-# Создаём папку HELP_FOLDER, если она задана и не существует
+# Создаём папку HELP_FOLDER, если нужно
 if HELP_FOLDER and not os.path.isdir(HELP_FOLDER):
     os.makedirs(HELP_FOLDER, exist_ok=True)
 
-# Инициализация CSV-файлов для логов уведомлений
+# Инициализация CSV-логов уведомлений
 for lf in (NOTIFY_LOG_FILE_UG, NOTIFY_LOG_FILE_RK):
     if not os.path.exists(lf):
         with open(lf, "w", newline="", encoding="utf-8") as f:
@@ -61,50 +59,41 @@ for lf in (NOTIFY_LOG_FILE_UG, NOTIFY_LOG_FILE_RK):
                 "RecipientID","RecipientName","Timestamp","Coordinates"
             ])
 
-# Базовые клавиатуры
+# Клавиатуры
 kb_back = ReplyKeyboardMarkup([["🔙 Назад"]], resize_keyboard=True)
 kb_actions = ReplyKeyboardMarkup(
-    [["🔍 Поиск по ТП"],
-     ["🔔 Отправить уведомление"],
-     ["ℹ️ Справка"],
-     ["🔙 Назад"]],
+    [["🔍 Поиск по ТП"], ["🔔 Отправить уведомление"], ["ℹ️ Справка"], ["🔙 Назад"]],
     resize_keyboard=True
 )
 kb_request_location = ReplyKeyboardMarkup(
     [[KeyboardButton("📍 Отправить геолокацию", request_location=True)],
-     ["ℹ️ Справка"],
-     ["🔙 Назад"]],
+     ["ℹ️ Справка"], ["🔙 Назад"]],
     resize_keyboard=True
 )
 
 def build_initial_kb(vis_flag: str, res_flag: str) -> ReplyKeyboardMarkup:
     f = vis_flag.strip().upper()
-    if f == "ALL":
-        nets = ["⚡ Россети ЮГ", "⚡ Россети Кубань"]
-    elif f == "UG":
-        nets = ["⚡ Россети ЮГ"]
-    else:
-        nets = ["⚡ Россети Кубань"]
-    buttons = [[n] for n in nets]
-    buttons.append(["📞 Телефоны провайдеров"])
-    if res_flag.strip().upper() == "ALL":
-        buttons.append(["📝 Сформировать отчёт"])
-    buttons.append(["ℹ️ Справка"])
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    nets = (["⚡ Россети ЮГ","⚡ Россети Кубань"] if f=="ALL"
+            else ["⚡ Россети ЮГ"] if f=="UG"
+            else ["⚡ Россети Кубань"])
+    btns = [[n] for n in nets] + [["📞 Телефоны провайдеров"]]
+    if res_flag.strip().upper()=="ALL":
+        btns += [["📝 Сформировать отчёт"]]
+    btns += [["ℹ️ Справка"]]
+    return ReplyKeyboardMarkup(btns, resize_keyboard=True)
 
 def build_report_kb(vis_flag: str) -> ReplyKeyboardMarkup:
     f = vis_flag.strip().upper()
     rows = []
-    if f in ("ALL", "UG"):
+    if f in ("ALL","UG"):
         rows.append(["📊 Уведомления о бездоговорных ВОЛС ЮГ"])
-    if f in ("ALL", "RK"):
+    if f in ("ALL","RK"):
         rows.append(["📊 Уведомления о бездоговорных ВОЛС Кубань"])
     rows += [["📋 Выгрузить информацию по контрагентам"],
-             ["ℹ️ Справка"],
-             ["🔙 Назад"]]
+             ["ℹ️ Справка"], ["🔙 Назад"]]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-# === /start ===
+# /start
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     vis_map, branch_map, res_map, names, resp_map = load_zones()
@@ -112,7 +101,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("🚫 У вас нет доступа.", reply_markup=kb_back)
 
     raw = branch_map[uid]
-    branch_key = "All" if raw == "All" else BRANCH_KEY_MAP.get(raw, raw)
+    branch_key = "All" if raw=="All" else BRANCH_KEY_MAP.get(raw, raw)
 
     context.user_data.clear()
     context.user_data.update({
@@ -129,75 +118,74 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=build_initial_kb(vis_map[uid], res_map[uid])
     )
 
-# === Обработчик текстовых сообщений ===
+# TEXT
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     data = context.user_data
-    step = data.get("step")
 
-    # — СПРАВКА —  
-    if text == "ℹ️ Справка" and step != "HELP_LIST":
-        data["prev_step"] = step or "INIT"
+    # если справка
+    if text=="ℹ️ Справка" and data.get("step")!="HELP_LIST":
+        data["prev_step"] = data.get("step","INIT")
         try:
-            files = [f for f in os.listdir(HELP_FOLDER)
-                     if not f.startswith(".") and
-                        os.path.isfile(os.path.join(HELP_FOLDER, f))]
+            files = sorted(os.listdir(HELP_FOLDER))
         except:
             return await update.message.reply_text(
-                "❌ Не удалось прочитать папку справки.",
-                reply_markup=kb_back
+                "❌ Ошибка чтения папки справки.", reply_markup=kb_back
             )
         data["help_files"] = files
         data["step"] = "HELP_LIST"
-        kb = ReplyKeyboardMarkup([[n] for n in files] + [["🔙 Назад"]],
-                                 resize_keyboard=True)
-        return await update.message.reply_text(
-            "Выберите файл справки:", reply_markup=kb
-        )
+        kb = ReplyKeyboardMarkup([[f] for f in files]+[["🔙 Назад"]], resize_keyboard=True)
+        return await update.message.reply_text("Выберите файл:", reply_markup=kb)
 
-    if step == "HELP_LIST":
-        if text == "🔙 Назад":
-            data["step"] = data.get("prev_step", "INIT")
-            return await restore_menu(update, context)
-        if text in data.get("help_files", []):
-            path = os.path.join(HELP_FOLDER, text)
-            if text.lower().endswith((".png", ".jpg", ".jpeg")):
-                await update.message.reply_photo(open(path, "rb"))
+    # в меню справки
+    if data.get("step")=="HELP_LIST":
+        if text=="🔙 Назад":
+            data["step"] = data.get("prev_step","INIT")
+            return await restore_menu(update,context)
+        if text in data.get("help_files",[]):
+            path = os.path.join(HELP_FOLDER,text)
+            if text.lower().endswith((".png",".jpg",".jpeg")):
+                await update.message.reply_photo(open(path,"rb"))
             else:
-                await update.message.reply_document(open(path, "rb"))
-            data["step"] = data.get("prev_step", "INIT")
-            return await restore_menu(update, context)
+                await update.message.reply_document(open(path,"rb"))
+            data["step"] = data.get("prev_step","INIT")
+            return await restore_menu(update,context)
 
-    # — existing logic for INIT, REPORT_MENU, NET, BRANCH, search, notify, etc. —
-    # (скопируйте сюда остальной ваш код без изменений, 
-    #  лишь убедитесь, что на каждом этапе клавиатуры содержат ℹ️ Справка)
+    # иначе — ваш остальной код (INIT, REPORT_MENU, NET, BRANCH,…)
+    # просто вставьте сюда всё, что было до этого, без изменений,
+    # но убедитесь, что на всех ветках в reply_markup есть кнопка “ℹ️ Справка”,
+    # и что в конце есть переход в restore_menu при возврате из справки.
 
-# === Вспомогательная функция возврата меню после справки ===
+# Обработчик локации (для уведомлений)
+async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # … ваша логика отправки уведомлений …
+    pass  # <— вставьте сюда уже отлаженный вами код уведомлений
+
+# Вспомогательный возврат из справки
 async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = context.user_data
-    step = data.get("step", "INIT")
-    vis  = data["vis_flag"]
-    resu = data["res_user"]
-    if step == "INIT":
+    step = context.user_data.get("step","INIT")
+    v = context.user_data["vis_flag"]
+    r = context.user_data["res_user"]
+    if step=="INIT":
         return await update.message.reply_text(
-            "Выберите опцию:", reply_markup=build_initial_kb(vis, resu)
+            "Выберите опцию:", reply_markup=build_initial_kb(v,r)
         )
-    if step == "REPORT_MENU":
+    if step=="REPORT_MENU":
         return await update.message.reply_text(
-            "📝 Выберите тип отчёта:", reply_markup=build_report_kb(vis)
+            "📝 Выберите тип отчёта:", reply_markup=build_report_kb(v)
         )
-    if step == "BRANCH":
+    if step=="BRANCH":
         return await update.message.reply_text(
             "Выберите действие:", reply_markup=kb_actions
         )
     return await update.message.reply_text("🔙 Назад", reply_markup=kb_back)
 
-# Регистрируем хендлеры
+# Регистрируем
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 application.add_handler(MessageHandler(filters.LOCATION, location_handler))
 
-if __name__ == "__main__":
+if __name__=="__main__":
     if SELF_URL:
         threading.Thread(
             target=lambda: requests.get(f"{SELF_URL}/webhook"),
