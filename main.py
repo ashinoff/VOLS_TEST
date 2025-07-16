@@ -1,4 +1,57 @@
-"""
+# Создаем приложение
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("reload", reload_users))
+    application.add_handler(CommandHandler("checkuser", check_user))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_error_handler(error_handler)
+    
+    # Загружаем данные пользователей
+    load_users_data()
+    
+    # Загружаем данные о пользователях бота
+    load_bot_users()
+    
+    # Создаем корутину для инициализации
+    async def init_and_start():
+        """Инициализация и запуск"""
+        # Предзагружаем документы
+        await preload_documents()
+        
+        # Запускаем фоновые задачи
+        asyncio.create_task(refresh_documents_cache())
+        asyncio.create_task(refresh_users_data())
+        asyncio.create_task(save_bot_users_periodically())
+    
+    # Добавляем обработчик для инициализации при старте
+    async def post_init(application: Application) -> None:
+        """Вызывается после инициализации приложения"""
+        await init_and_start()
+    
+    # Добавляем обработчик для сохранения данных при остановке
+    async def post_shutdown(application: Application) -> None:
+        """Вызывается при остановке приложения"""
+        logger.info("Сохраняем данные перед остановкой...")
+        save_bot_users()
+    
+    # Устанавливаем callbacks
+    application.post_init = post_init
+    if hasattr(application, 'post_shutdown'):
+        application.post_shutdown = post_shutdown
+    
+    # Запускаем webhook
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+        drop_pending_updates=True
+    )"""
 ВОЛС Ассистент - Telegram бот для управления уведомлениями о бездоговорных ВОЛС
 Версия: 2.1.0
 
@@ -2727,6 +2780,61 @@ if __name__ == '__main__':
     if not ZONES_CSV_URL:
         logger.error("ZONES_CSV_URL не задан в переменных окружения!")
         exit(1)
+    
+    # Создаем приложение
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("reload", reload_users))
+    application.add_handler(CommandHandler("checkuser", check_user))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_error_handler(error_handler)
+    
+    # Загружаем данные пользователей
+    load_users_data()
+    
+    # Загружаем данные о пользователях бота
+    load_bot_users()
+    
+    # Создаем корутину для инициализации
+    async def init_and_start():
+        """Инициализация и запуск"""
+        # Предзагружаем документы
+        await preload_documents()
+        
+        # Запускаем фоновые задачи
+        asyncio.create_task(refresh_documents_cache())
+        asyncio.create_task(refresh_users_data())
+        asyncio.create_task(save_bot_users_periodically())
+    
+    # Добавляем обработчик для инициализации при старте
+    async def post_init(application: Application) -> None:
+        """Вызывается после инициализации приложения"""
+        await init_and_start()
+    
+    # Добавляем обработчик для сохранения данных при остановке
+    async def post_shutdown(application: Application) -> None:
+        """Вызывается при остановке приложения"""
+        logger.info("Сохраняем данные перед остановкой...")
+        save_bot_users()
+    
+    # Устанавливаем callbacks
+    application.post_init = post_init
+    if hasattr(application, 'post_shutdown'):
+        application.post_shutdown = post_shutdown
+    
+    # Запускаем webhook
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+        drop_pending_updates=True
+    )
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не задан в переменных окружения!")
         exit(1)
