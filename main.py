@@ -1,9 +1,38 @@
+"""
+ВОЛС Ассистент - Telegram бот для управления уведомлениями о бездоговорных ВОЛС
+Версия: 2.1.0
+
+Основные функции:
+- Поиск информации по ТП в базах данных филиалов
+- Отправка уведомлений ответственным лицам с фото и геолокацией
+- Генерация отчетов по уведомлениям и активности пользователей
+- Доступ к справочным документам
+
+Административные функции (visibility='All'):
+- СТАТУС ПОЛЬЗОВАТЕЛЕЙ - Excel отчет кто запускал бота
+- УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ - массовая отправка сообщения о необходимости нажать /start
+- МАССОВАЯ РАССЫЛКА - произвольное сообщение всем или только активным пользователям
+
+Требования:
+- Python 3.8+
+- Telegram Bot Token
+- CSV файл с зонами доступа пользователей
+- Переменные окружения для URL документов и баз данных
+
+Примечание: данные о запусках бота сохраняются только в текущей сессии.
+Для постоянного хранения требуется внешняя БД.
+"""
+
+BOT_VERSION = "2.1.0"
+
 import os
 import logging
 import csv
 import io
 import re
 import json
+import signal
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import requests
@@ -74,8 +103,13 @@ documents_cache_time = {}
 # Хранилище активности пользователей
 user_activity = {}  # {user_id: {'last_activity': datetime, 'count': int}}
 
+# Административные функции (для пользователей с visibility='All'):
+# 1. СТАТУС ПОЛЬЗОВАТЕЛЕЙ - показывает кто из базы запускал бота (данные сбрасываются после деплоя)
+# 2. УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ - отправляет всем из базы сообщение о необходимости нажать /start
+# 3. МАССОВАЯ РАССЫЛКА - позволяет отправить произвольное сообщение либо тем кто запускал бота, либо всем из базы
+
 # Словарь для отслеживания кто запускал бота
-bot_users = {}  # {user_id: {'first_start': datetime, 'last_start': datetime, 'username': str}}
+bot_users = {}  # {user_id: {'first_start': datetime, 'last_start': datetime, 'username': str, 'first_name': str}}
 
 # Справочные документы - настройте в переменных окружения
 REFERENCE_DOCS = {
@@ -91,7 +125,12 @@ REFERENCE_DOCS = {
 USER_GUIDE_URL = os.environ.get('USER_GUIDE_URL', 'https://your-domain.com/vols-guide')
 
 # Файл для сохранения данных о пользователях бота
-BOT_USERS_FILE = 'bot_users.json'
+# ВАЖНО: На Render.com данные не сохраняются между деплоями!
+# Для постоянного хранения нужно использовать:
+# 1. Внешнюю базу данных (PostgreSQL, MongoDB и т.д.)
+# 2. Persistent disk (платная функция на Render)
+# 3. Внешнее хранилище (S3, Google Cloud Storage и т.д.)
+BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
 
 def save_bot_users():
     """Сохранить данные о пользователях бота в файл"""
@@ -108,7 +147,7 @@ def save_bot_users():
         
         with open(BOT_USERS_FILE, 'w', encoding='utf-8') as f:
             json.dump(serializable_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"Сохранено {len(bot_users)} пользователей бота")
+        logger.info(f"Сохранено {len(bot_users)} пользователей бота в {BOT_USERS_FILE}")
     except Exception as e:
         logger.error(f"Ошибка сохранения данных пользователей бота: {e}")
 
@@ -116,21 +155,36 @@ def load_bot_users():
     """Загрузить данные о пользователях бота из файла"""
     global bot_users
     try:
+        logger.info(f"Пытаемся загрузить данные пользователей из {BOT_USERS_FILE}")
         if os.path.exists(BOT_USERS_FILE):
             with open(BOT_USERS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Преобразуем строки обратно в datetime
+            # Преобразуем строки обратно в datetime с учетом часового пояса
             bot_users = {}
             for uid, user_data in data.items():
-                bot_users[uid] = {
-                    'first_start': datetime.fromisoformat(user_data['first_start']),
-                    'last_start': datetime.fromisoformat(user_data['last_start']),
-                    'username': user_data.get('username', ''),
-                    'first_name': user_data.get('first_name', '')
-                }
+                try:
+                    first_start = datetime.fromisoformat(user_data['first_start'])
+                    last_start = datetime.fromisoformat(user_data['last_start'])
+                    
+                    # Если datetime не имеет часового пояса, добавляем московский
+                    if first_start.tzinfo is None:
+                        first_start = MOSCOW_TZ.localize(first_start)
+                    if last_start.tzinfo is None:
+                        last_start = MOSCOW_TZ.localize(last_start)
+                    
+                    bot_users[uid] = {
+                        'first_start': first_start,
+                        'last_start': last_start,
+                        'username': user_data.get('username', ''),
+                        'first_name': user_data.get('first_name', '')
+                    }
+                except Exception as e:
+                    logger.error(f"Ошибка загрузки данных пользователя {uid}: {e}")
             
             logger.info(f"Загружено {len(bot_users)} пользователей бота из файла")
+        else:
+            logger.info(f"Файл {BOT_USERS_FILE} не найден, начинаем с пустого списка")
     except Exception as e:
         logger.error(f"Ошибка загрузки данных пользователей бота: {e}")
         bot_users = {}
@@ -466,7 +520,8 @@ def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     
     # Административные функции для visibility='All'
     if visibility == 'All':
-        keyboard.append(['🔔 PING ПОЛЬЗОВАТЕЛЕЙ', '📢 МАССОВАЯ РАССЫЛКА'])
+        keyboard.append(['📊 СТАТУС ПОЛЬЗОВАТЕЛЕЙ', '🔄 УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ'])
+        keyboard.append(['📢 МАССОВАЯ РАССЫЛКА'])
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -1201,7 +1256,7 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(f"❌ Ошибка генерации отчета: {str(e)}")
 
 async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Генерация отчета PING - кто заходил в бота"""
+    """Генерация отчета статуса пользователей - кто заходил в бота"""
     try:
         user_id = str(update.effective_user.id)
         permissions = get_user_permissions(user_id)
@@ -1211,8 +1266,16 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ У вас нет доступа к этой функции")
             return
         
+        # Проверяем что база пользователей загружена
+        if not users_cache:
+            await update.message.reply_text(
+                "❌ База пользователей не загружена.\n\n"
+                "Попробуйте команду /reload для перезагрузки данных."
+            )
+            return
+        
         # Показываем анимированное сообщение
-        loading_msg = await update.message.reply_text("🔔 Формирую отчет PING...")
+        loading_msg = await update.message.reply_text("📊 Формирую отчет статуса пользователей...")
         
         # Собираем данные всех пользователей
         ping_data = []
@@ -1243,7 +1306,7 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if not ping_data:
             await loading_msg.delete()
-            await update.message.reply_text("📊 Нет данных для отчета")
+            await update.message.reply_text("📊 Нет данных для отчета.\n\nВозможно база пользователей не загружена.")
             return
         
         # Создаем DataFrame и сортируем
@@ -1253,11 +1316,11 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
         # Создаем Excel файл с форматированием
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='PING отчет', index=False)
+            df.to_excel(writer, sheet_name='Статус пользователей', index=False)
             
             # Получаем объекты workbook и worksheet
             workbook = writer.book
-            worksheet = writer.sheets['PING отчет']
+            worksheet = writer.sheets['Статус пользователей']
             
             # Формат заголовков
             header_format = workbook.add_format({
@@ -1312,16 +1375,19 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Отправляем файл
         moscow_time = get_moscow_time()
-        filename = f"PING_отчет_{moscow_time.strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"Статус_пользователей_{moscow_time.strftime('%Y%m%d_%H%M%S')}.xlsx"
         
-        caption = f"""🔔 PING отчет пользователей
+        caption = f"""📊 Отчет статуса пользователей
 
 👥 Всего в базе: {total_count}
 ✅ Активировали бота: {active_count} ({active_count/total_count*100:.1f}%)
 ❌ Не активировали: {inactive_count} ({inactive_count/total_count*100:.1f}%)
 
-📊 Зеленым отмечены те, кто хотя бы раз запускал бота
-🕐 Сформировано: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК"""
+📋 Зеленым отмечены те, кто хотя бы раз запускал бота
+🕐 Сформировано: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК
+
+⚠️ Внимание: данные о запусках сохраняются только в текущей сессии бота.
+После обновления/перезапуска бота статистика обнуляется!"""
         
         await update.message.reply_document(
             document=InputFile(output, filename=filename),
@@ -1335,86 +1401,206 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ Ошибка генерации отчета: {str(e)}")
 
 
+async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Уведомить всех пользователей о необходимости перезапуска бота"""
+    user_id = str(update.effective_user.id)
+    permissions = get_user_permissions(user_id)
+    
+    # Проверяем права доступа
+    if permissions.get('visibility') != 'All':
+        await update.message.reply_text("❌ У вас нет доступа к этой функции")
+        return
+    
+    # Проверяем что база пользователей загружена
+    if not users_cache:
+        await update.message.reply_text(
+            "❌ База пользователей не загружена.\n\n"
+            "Попробуйте команду /reload для перезагрузки данных."
+        )
+        return
+    
+    # Показываем анимированное сообщение
+    loading_msg = await update.message.reply_text("🔄 Начинаю отправку уведомлений о перезапуске...")
+    
+    # Текст уведомления
+    restart_message = """🔄 *Обновление бота ВОЛС Ассистент*
+
+Бот был обновлен и перезапущен.
+
+Для продолжения работы, пожалуйста, нажмите команду:
+👉 /start
+
+Это необходимо для корректной работы всех функций бота после обновления.
+
+_Приносим извинения за неудобства._"""
+    
+    # Счетчики
+    success_count = 0
+    failed_count = 0
+    failed_users = []
+    
+    # Получаем всех пользователей из базы
+    total_users = len(users_cache)
+    
+    for i, (uid, user_info) in enumerate(users_cache.items()):
+        try:
+            # Обновляем статус каждые 20 пользователей
+            if i % 20 == 0:
+                try:
+                    await loading_msg.edit_text(
+                        f"🔄 Отправка уведомлений о перезапуске...\n"
+                        f"Прогресс: {i}/{total_users}"
+                    )
+                except:
+                    pass
+            
+            # Отправляем сообщение
+            await context.bot.send_message(
+                chat_id=uid,
+                text=restart_message,
+                parse_mode='Markdown'
+            )
+            success_count += 1
+            
+            # Небольшая задержка чтобы не превысить лимиты Telegram
+            await asyncio.sleep(0.05)
+            
+        except Exception as e:
+            failed_count += 1
+            failed_users.append(f"{user_info.get('name', 'ID: ' + uid)}")
+            logger.debug(f"Не удалось отправить пользователю {uid}: {e}")
+    
+    # Удаляем анимированное сообщение
+    await loading_msg.delete()
+    
+    # Формируем отчет о рассылке
+    result_text = f"""✅ Уведомления о перезапуске отправлены!
+
+📊 Статистика:
+• Всего в базе: {total_users}
+• ✅ Успешно отправлено: {success_count}
+• ❌ Не удалось отправить: {failed_count}
+
+💡 Пользователи, которым не удалось отправить, вероятно:
+• Не запускали бота ни разу
+• Заблокировали бота  
+• Удалили аккаунт Telegram
+
+🔄 Рекомендуется использовать эту функцию после каждого обновления бота!"""
+    
+    if failed_users and len(failed_users) <= 10:
+        result_text += f"\n\n❌ Не удалось отправить:\n" + "\n".join(failed_users[:10])
+        if len(failed_users) > 10:
+            result_text += f"\n... и еще {len(failed_users) - 10} пользователей"
+    
+    await update.message.reply_text(result_text)
+
+
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка массовой рассылки"""
     user_id = str(update.effective_user.id)
-    state = user_states.get(user_id, {}).get('state')
+    permissions = get_user_permissions(user_id)
     
-    if state == 'broadcast_message':
-        # Получаем текст сообщения для рассылки
-        broadcast_text = update.message.text
-        
-        if broadcast_text == '❌ Отмена':
-            user_states[user_id] = {'state': 'main'}
-            await update.message.reply_text(
-                "Рассылка отменена",
-                reply_markup=get_main_keyboard(get_user_permissions(user_id))
-            )
-            return
-        
-        # Показываем анимированное сообщение
-        loading_msg = await update.message.reply_text("📤 Начинаю рассылку...")
-        
-        # Счетчики
-        success_count = 0
-        failed_count = 0
-        failed_users = []
-        
-        # Отправляем сообщение всем, кто хоть раз запускал бота
-        total_users = len(bot_users)
-        
-        for i, (uid, user_info) in enumerate(bot_users.items()):
-            try:
-                # Обновляем статус каждые 10 пользователей
-                if i % 10 == 0:
-                    try:
-                        await loading_msg.edit_text(
-                            f"📤 Отправка сообщений...\n"
-                            f"Прогресс: {i}/{total_users}"
-                        )
-                    except:
-                        pass
-                
-                # Отправляем сообщение
-                await context.bot.send_message(
-                    chat_id=uid,
-                    text=broadcast_text,
-                    parse_mode='Markdown'
-                )
-                success_count += 1
-                
-                # Небольшая задержка чтобы не превысить лимиты
-                await asyncio.sleep(0.05)
-                
-            except Exception as e:
-                failed_count += 1
-                user_data = users_cache.get(uid, {})
-                failed_users.append(f"{user_data.get('name', 'ID: ' + uid)}")
-                logger.error(f"Ошибка отправки пользователю {uid}: {e}")
-        
-        # Удаляем анимированное сообщение
-        await loading_msg.delete()
-        
-        # Формируем отчет о рассылке
-        result_text = f"""✅ Рассылка завершена!
-
-📊 Статистика:
-• Всего отправлено: {total_users}
-• ✅ Успешно: {success_count}
-• ❌ Не удалось: {failed_count}"""
-        
-        if failed_users and len(failed_users) <= 10:
-            result_text += f"\n\n❌ Не удалось отправить:\n" + "\n".join(failed_users[:10])
-        elif failed_users:
-            result_text += f"\n\n❌ Не удалось отправить {len(failed_users)} пользователям"
-        
-        # Возвращаемся в главное меню
-        user_states[user_id] = {'state': 'main'}
-        
+    # Проверяем права доступа
+    if permissions.get('visibility') != 'All':
+        await update.message.reply_text("❌ У вас нет доступа к этой функции")
+        return
+    
+    # Проверяем что база пользователей загружена для рассылки всем
+    state_data = user_states.get(user_id, {})
+    broadcast_type = state_data.get('broadcast_type', 'bot_users')
+    
+    if broadcast_type == 'all_users' and not users_cache:
         await update.message.reply_text(
-            result_text,
+            "❌ База пользователей не загружена.\n\n"
+            "Попробуйте команду /reload для перезагрузки данных."
+        )
+        return
+    
+    # Получаем текст сообщения для рассылки
+    broadcast_text = update.message.text
+    
+    if broadcast_text == '❌ Отмена':
+        user_states[user_id] = {'state': 'main'}
+        await update.message.reply_text(
+            "Рассылка отменена",
             reply_markup=get_main_keyboard(get_user_permissions(user_id))
         )
+        return
+    
+    # Показываем анимированное сообщение
+    loading_msg = await update.message.reply_text("📤 Начинаю рассылку...")
+    
+    # Счетчики
+    success_count = 0
+    failed_count = 0
+    failed_users = []
+    
+    # Определяем получателей в зависимости от типа рассылки
+    if broadcast_type == 'all_users':
+        # Отправляем всем из базы данных
+        recipients = users_cache
+        recipient_type = "всем пользователям из базы"
+    else:
+        # Отправляем только тем, кто запускал бота
+        recipients = {uid: users_cache.get(uid, {'name': f'ID: {uid}'}) for uid in bot_users}
+        recipient_type = "пользователям, запускавшим бота"
+    
+    total_users = len(recipients)
+    
+    for i, (uid, user_info) in enumerate(recipients.items()):
+        try:
+            # Обновляем статус каждые 20 пользователей
+            if i % 20 == 0:
+                try:
+                    await loading_msg.edit_text(
+                        f"📤 Отправка сообщений {recipient_type}...\n"
+                        f"Прогресс: {i}/{total_users}"
+                    )
+                except:
+                    pass
+            
+            # Отправляем сообщение
+            await context.bot.send_message(
+                chat_id=uid,
+                text=broadcast_text,
+                parse_mode='Markdown'
+            )
+            success_count += 1
+            
+            # Небольшая задержка чтобы не превысить лимиты
+            await asyncio.sleep(0.05)
+            
+        except Exception as e:
+            failed_count += 1
+            user_name = user_info.get('name', f'ID: {uid}')
+            failed_users.append(user_name)
+            logger.debug(f"Ошибка отправки пользователю {uid}: {e}")
+    
+    # Удаляем анимированное сообщение
+    await loading_msg.delete()
+    
+    # Формируем отчет о рассылке
+    result_text = f"""✅ Рассылка завершена!
+
+📊 Статистика:
+• Тип рассылки: {recipient_type}
+• Всего получателей: {total_users}
+• ✅ Успешно: {success_count}
+• ❌ Не удалось: {failed_count}"""
+    
+    if failed_users and len(failed_users) <= 10:
+        result_text += f"\n\n❌ Не удалось отправить:\n" + "\n".join(failed_users[:10])
+        if len(failed_users) > 10:
+            result_text += f"\n... и еще {len(failed_users) - 10} пользователей"
+    
+    # Возвращаемся в главное меню
+    user_states[user_id] = {'state': 'main'}
+    
+    await update.message.reply_text(
+        result_text,
+        reply_markup=get_main_keyboard(get_user_permissions(user_id))
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
@@ -1431,6 +1617,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     state = user_states.get(user_id, {}).get('state', 'main')
     
+    # Выбор типа рассылки
+    if state == 'broadcast_choice':
+        if text == '❌ Отмена':
+            user_states[user_id] = {'state': 'main'}
+            await update.message.reply_text(
+                "Главное меню",
+                reply_markup=get_main_keyboard(permissions)
+            )
+        elif text in ['📨 Всем кто запускал бота', '📋 Всем из базы данных']:
+            # Проверяем есть ли пользователи для рассылки
+            if '📨' in text and len(bot_users) == 0:
+                await update.message.reply_text(
+                    "⚠️ Пока никто не запускал бота после последнего обновления.\n\n"
+                    "Эта опция станет доступна после того, как пользователи начнут использовать бота.",
+                    reply_markup=get_main_keyboard(permissions)
+                )
+                user_states[user_id] = {'state': 'main'}
+            else:
+                user_states[user_id]['state'] = 'broadcast_message'
+                user_states[user_id]['broadcast_type'] = 'bot_users' if '📨' in text else 'all_users'
+                keyboard = [['❌ Отмена']]
+                
+                recipients_info = ""
+                if '📨' in text:
+                    recipients_info = f"\n\n⚠️ Внимание: будут уведомлены только те, кто запускал бота после последнего обновления ({len(bot_users)} пользователей)"
+                else:
+                    recipients_info = f"\n\n📋 Будут уведомлены все пользователи из базы данных ({len(users_cache)} пользователей)"
+                
+                await update.message.reply_text(
+                    "📢 Введите сообщение для массовой рассылки.\n\n"
+                    f"Получатели: {text}"
+                    f"{recipients_info}\n\n"
+                    "Можно использовать Markdown форматирование:\n"
+                    "*жирный* _курсив_ `код`",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+        return
+    
     # Обработка массовой рассылки
     if state == 'broadcast_message':
         await handle_broadcast(update, context)
@@ -1438,7 +1662,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Обработка кнопки Назад
     if text == '⬅️ Назад':
-        if state in ['rosseti_kuban', 'rosseti_yug', 'reports', 'phones', 'settings', 'broadcast_message']:
+        if state in ['rosseti_kuban', 'rosseti_yug', 'reports', 'phones', 'settings', 'broadcast_message', 'broadcast_choice']:
             user_states[user_id] = {'state': 'main'}
             await update.message.reply_text("Главное меню", reply_markup=get_main_keyboard(permissions))
         elif state == 'reference':
@@ -1594,22 +1818,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == '📞 ТЕЛЕФОНЫ КОНТРАГЕНТОВ':
             await update.message.reply_text("🚧 Раздел в разработке")
         
-        elif text == '🔔 PING ПОЛЬЗОВАТЕЛЕЙ':
+        elif text == '📊 СТАТУС ПОЛЬЗОВАТЕЛЕЙ':
             if permissions.get('visibility') == 'All':
                 await generate_ping_report(update, context)
             else:
                 await update.message.reply_text("❌ У вас нет доступа к этой функции")
         
+        elif text == '🔄 УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ':
+            if permissions.get('visibility') == 'All':
+                # Проверяем что это не первый запуск бота
+                if len(bot_users) > 0:
+                    await notify_restart(update, context)
+                else:
+                    await update.message.reply_text(
+                        "⚠️ Это первый запуск бота после деплоя.\n"
+                        "Пока никто не активировал бота командой /start.\n\n"
+                        "Функция уведомления о перезапуске станет доступна после того, "
+                        "как хотя бы один пользователь запустит бота."
+                    )
+            else:
+                await update.message.reply_text("❌ У вас нет доступа к этой функции")
+        
         elif text == '📢 МАССОВАЯ РАССЫЛКА':
             if permissions.get('visibility') == 'All':
-                user_states[user_id] = {'state': 'broadcast_message'}
-                keyboard = [['❌ Отмена']]
+                user_states[user_id] = {'state': 'broadcast_choice'}
+                keyboard = [
+                    ['📨 Всем кто запускал бота'],
+                    ['📋 Всем из базы данных'],
+                    ['❌ Отмена']
+                ]
                 await update.message.reply_text(
-                    "📢 Введите сообщение для массовой рассылки.\n\n"
-                    "Сообщение будет отправлено всем пользователям, которые хотя бы раз запускали бота.\n\n"
-                    "Можно использовать Markdown форматирование:\n"
-                    "*жирный* _курсив_ `код`",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    "📢 Выберите кому отправить рассылку:\n\n"
+                    "📨 *Всем кто запускал бота* - отправка только тем, кто использовал /start после последнего обновления\n\n"
+                    "📋 *Всем из базы данных* - отправка всем пользователям из зон доступа",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+                    parse_mode='Markdown'
                 )
             else:
                 await update.message.reply_text("❌ У вас нет доступа к этой функции")
@@ -1886,7 +2129,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 await update.message.reply_text(
                     "📖 *Руководство пользователя ВОЛС Ассистент*\n\n"
-                    "Версия 2.0 • Июль 2025\n\n"
+                    f"Версия {BOT_VERSION} • Июль 2025\n\n"
                     "В руководстве вы найдете:\n"
                     "• Пошаговые инструкции по работе\n"
                     "• Описание всех функций\n"
@@ -2333,13 +2576,13 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     permissions = get_user_permissions(user_id)
     
-    status_text = f"""🤖 Статус бота ВОЛС Ассистент
+    status_text = f"""🤖 Статус бота ВОЛС Ассистент v{BOT_VERSION}
 
 👤 Ваш ID: {user_id}
 📋 Ваши права: {permissions.get('visibility', 'Нет')}
 👥 Загружено пользователей: {len(users_cache)}
 💾 Резервная копия: {len(users_cache_backup)} пользователей
-🟢 Активировали бота: {len(bot_users)} пользователей
+🟢 Активировали бота (текущая сессия): {len(bot_users)} пользователей
 🕐 Время сервера: {get_moscow_time().strftime('%d.%m.%Y %H:%M:%S')} МСК
 
 📊 Статистика:
@@ -2350,7 +2593,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔧 Переменные окружения:
 • BOT_TOKEN: {'✅ Задан' if BOT_TOKEN else '❌ Не задан'}
 • ZONES_CSV_URL: {'✅ Задан' if ZONES_CSV_URL else '❌ Не задан'}
-• WEBHOOK_URL: {'✅ Задан' if WEBHOOK_URL else '❌ Не задан'}"""
+• WEBHOOK_URL: {'✅ Задан' if WEBHOOK_URL else '❌ Не задан'}
+
+⚠️ Данные о запусках бота сбрасываются после перезапуска!"""
     
     await update.message.reply_text(status_text)
 
@@ -2383,7 +2628,7 @@ async def reload_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Было пользователей: {old_count}\n"
             f"Загружено пользователей: {new_count}\n"
             f"Резервная копия: {len(users_cache_backup)} пользователей\n"
-            f"Активировали бота: {len(bot_users)} пользователей"
+            f"Активировали бота (текущая сессия): {len(bot_users)} пользователей"
         )
     except Exception as e:
         await loading_msg.edit_text(f"❌ Ошибка перезагрузки: {str(e)}")
@@ -2470,6 +2715,10 @@ async def refresh_documents_cache():
                     logger.error(f"❌ Ошибка обновления кэша {doc_name}: {e}")
 
 if __name__ == '__main__':
+    # Регистрируем обработчик сигналов
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     # Проверяем обязательные переменные окружения
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не задан в переменных окружения!")
@@ -2514,8 +2763,16 @@ if __name__ == '__main__':
         """Вызывается после инициализации приложения"""
         await init_and_start()
     
-    # Устанавливаем post_init callback
+    # Добавляем обработчик для сохранения данных при остановке
+    async def post_shutdown(application: Application) -> None:
+        """Вызывается при остановке приложения"""
+        logger.info("Сохраняем данные перед остановкой...")
+        save_bot_users()
+    
+    # Устанавливаем callbacks
     application.post_init = post_init
+    if hasattr(application, 'post_shutdown'):
+        application.post_shutdown = post_shutdown
     
     # Запускаем webhook
     application.run_webhook(
