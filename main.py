@@ -210,11 +210,13 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     """Получить ключ переменной окружения для филиала"""
     logger.info(f"get_env_key_for_branch вызван с параметрами: branch='{branch}', network='{network}', is_reference={is_reference}")
     
-    # Сначала пробуем нормализовать название
-    normalized_branch = normalize_branch_name(branch)
-    if normalized_branch != branch:
-        logger.info(f"Филиал '{branch}' нормализован к '{normalized_branch}'")
-        branch = normalized_branch
+    # НЕ нормализуем если филиал из прав пользователя
+    # Нормализуем только если это филиал из списка (с "ЭС")
+    if ' ЭС' in branch:
+        normalized_branch = normalize_branch_name(branch)
+        if normalized_branch != branch:
+            logger.info(f"Филиал '{branch}' нормализован к '{normalized_branch}'")
+            branch = normalized_branch
     
     translit_map = {
         'Юго-Западные': 'YUGO_ZAPADNYE',
@@ -250,7 +252,9 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
         'Юго-Восточные': 'YUGO_VOSTOCHNYE',
         'Юго-Восточный': 'YUGO_VOSTOCHNYE',
         'Северные': 'SEVERNYE',
-        'Северный': 'SEVERNYE'
+        'Северный': 'SEVERNYE',
+        'Туапсинские': 'TUAPSINSKIE',
+        'Туапсинский': 'TUAPSINSKIE'
     }
     
     branch_clean = branch.replace(' ЭС', '').strip()
@@ -407,7 +411,8 @@ def normalize_branch_name(branch_name: str) -> str:
         'Юго-Восточный': 'Юго-Восточные',
         'Северный': 'Северные',
         'Юго-Западный': 'Юго-Западные',
-        'Усть-Лабинский': 'Усть-Лабинские'
+        'Усть-Лабинский': 'Усть-Лабинские',
+        'Туапсинский': 'Туапсинские'
     }
     
     branch_clean = branch_name.replace(' ЭС', '').strip()
@@ -583,6 +588,7 @@ def get_document_action_keyboard() -> ReplyKeyboardMarkup:
 def get_after_search_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура после результатов поиска"""
     keyboard = [
+        ['📨 Отправить уведомление'],
         ['🔍 Новый поиск'],
         ['⬅️ Назад']
     ]
@@ -718,6 +724,12 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     branch = user_data.get('branch')
     network = user_data.get('network')
+    
+    # Если branch не найден в состоянии, берем из прав пользователя
+    if not branch:
+        sender_permissions = get_user_permissions(user_id)
+        branch = sender_permissions.get('branch')
+        logger.warning(f"Branch не найден в состоянии, используем из прав пользователя: {branch}")
     
     sending_messages = [
         "📨 Подготовка уведомления...",
@@ -1551,8 +1563,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Выберите филиал", reply_markup=get_branch_keyboard(branches))
         elif state in ['search_tp', 'send_notification']:
             branch = user_states[user_id].get('branch')
-            user_states[user_id]['state'] = f'branch_{branch}'
-            await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
+            # Проверяем, откуда пришли в отправку уведомления
+            if state == 'send_notification' and user_states[user_id].get('action') == 'select_vl' and 'last_search_tp' in user_states[user_id]:
+                # Если пришли из поиска - возвращаемся к результатам поиска
+                user_states[user_id]['state'] = 'search_tp'
+                user_states[user_id]['action'] = 'after_results'  # Специальное состояние после результатов
+                await update.message.reply_text(
+                    "Вернулись к результатам поиска",
+                    reply_markup=get_after_search_keyboard()
+                )
+            else:
+                # Иначе возвращаемся в меню филиала
+                user_states[user_id]['state'] = f'branch_{branch}'
+                await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
         return
     
     # Главное меню
@@ -1745,6 +1768,67 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🔍 Введите наименование ТП для поиска:",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
+        elif text == '📨 Отправить уведомление':
+            # Переход к отправке уведомления с уже найденной ТП
+            if 'last_search_tp' in user_states[user_id]:
+                selected_tp = user_states[user_id]['last_search_tp']
+                branch = user_states[user_id].get('branch')
+                network = user_states[user_id].get('network')
+                
+                # Проверяем права пользователя - может у него указан конкретный филиал
+                user_permissions = get_user_permissions(user_id)
+                user_branch = user_permissions.get('branch')
+                
+                # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
+                if user_branch and user_branch != 'All':
+                    branch = user_branch  # Используем как есть из прав (например "Сочинский")
+                    logger.info(f"Используем филиал из прав пользователя для отправки уведомления БЕЗ изменений: {branch}")
+                
+                # Загружаем справочник для поиска ВЛ
+                env_key = get_env_key_for_branch(branch, network, is_reference=True)
+                csv_url = os.environ.get(env_key)
+                
+                if not csv_url:
+                    await update.message.reply_text(f"❌ Справочник для филиала {branch} не найден")
+                    return
+                
+                loading_msg = await update.message.reply_text("🔍 Загружаю данные из справочника...")
+                
+                data = load_csv_from_url(csv_url)
+                results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+                
+                # Фильтруем по РЭС если у пользователя ограничения
+                user_res = user_permissions.get('res')
+                
+                if user_res and user_res != 'All':
+                    results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+                
+                await loading_msg.delete()
+                
+                if not results:
+                    await update.message.reply_text("❌ ТП не найдена в справочнике")
+                    return
+                
+                # Переходим сразу к выбору ВЛ
+                user_states[user_id]['state'] = 'send_notification'
+                user_states[user_id]['action'] = 'select_vl'
+                user_states[user_id]['selected_tp'] = selected_tp
+                user_states[user_id]['tp_data'] = results[0]
+                
+                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                
+                keyboard = []
+                for vl in vl_list:
+                    keyboard.append([vl])
+                keyboard.append(['⬅️ Назад'])
+                
+                await update.message.reply_text(
+                    f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                    f"Выберите ВЛ:",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+            else:
+                await update.message.reply_text("❌ Сначала выполните поиск ТП")
         elif user_states[user_id].get('action') == 'search':
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
@@ -1754,11 +1838,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_branch = user_permissions.get('branch')
             user_res = user_permissions.get('res')
             
-            # Если у пользователя указан конкретный филиал в правах - используем его
+            # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
             if user_branch and user_branch != 'All':
-                branch = normalize_branch_name(user_branch)
-                logger.info(f"Используем филиал из прав пользователя: {branch}")
+                branch = user_branch  # Используем как есть из прав (например "Сочинский")
+                logger.info(f"Используем филиал из прав пользователя БЕЗ изменений: {branch}")
             else:
+                # Только если выбрали из меню - нормализуем
                 branch = normalize_branch_name(branch)
             
             logger.info(f"Поиск ТП для филиала: {branch}, сеть: {network}")
@@ -1784,7 +1869,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             env_key = get_env_key_for_branch(branch, network)
             csv_url = os.environ.get(env_key)
             
-            logger.info(f"URL из переменной {env_key}: {csv_url}")
+            logger.info(f"Итоговые параметры поиска:")
+            logger.info(f"  Филиал: {branch}")
+            logger.info(f"  Сеть: {network}")
+            logger.info(f"  Ключ переменной: {env_key}")
+            logger.info(f"  URL из переменной: {csv_url}")
             
             if not csv_url:
                 available_vars = [key for key in os.environ.keys() if 'URL' in key and network in key]
@@ -1864,10 +1953,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_branch = user_permissions.get('branch')
         user_res = user_permissions.get('res')
         
-        # Если у пользователя указан конкретный филиал в правах - используем его
+        # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
         if user_branch and user_branch != 'All':
-            branch = normalize_branch_name(user_branch)
-            logger.info(f"Используем филиал из прав пользователя для уведомления: {branch}")
+            branch = user_branch  # Используем как есть из прав (например "Сочинский")
+            logger.info(f"Используем филиал из прав пользователя для уведомления БЕЗ изменений: {branch}")
         
         notification_messages = [
             "🔍 Поиск в справочнике...",
@@ -1886,6 +1975,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         env_key = get_env_key_for_branch(branch, network, is_reference=True)
         csv_url = os.environ.get(env_key)
+        
+        logger.info(f"Загрузка справочника для уведомления:")
+        logger.info(f"  Филиал: {branch}")
+        logger.info(f"  Сеть: {network}")
+        logger.info(f"  Ключ переменной: {env_key}")
+        logger.info(f"  URL справочника: {csv_url}")
         
         if not csv_url:
             await loading_msg.delete()
@@ -1957,7 +2052,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id]['action'] = 'select_vl'
             
             await update.message.reply_text(
-                f"Выберите ВЛ для ТП {text}:",
+                f"📨 Отправка уведомления по ТП: {text}\n\n"
+                f"Выберите ВЛ:",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
     
@@ -2288,6 +2384,11 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
         await update.message.reply_text("❌ Результаты не найдены")
         return
         
+    # Сохраняем найденную ТП для возможности отправки уведомления
+    user_id = str(update.effective_user.id)
+    user_states[user_id]['last_search_tp'] = tp_name
+    logger.info(f"Сохранена ТП для отправки уведомления: {tp_name}")
+    
     res_name = results[0].get('РЭС', 'Неизвестный')
     
     message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
