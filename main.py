@@ -1926,23 +1926,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             tp_list = list(set([r['Наименование ТП'] for r in results]))
             
-                if len(tp_list) == 1:
-                    # Если найдена только одна ТП, сразу показываем результаты
-                    await show_tp_results(update, results, tp_list[0])
-                else:
-                    # Показываем список найденных ТП
-                    keyboard = []
-                    for tp in tp_list[:10]:
-                        keyboard.append([tp])
-                    keyboard.append(['⬅️ Назад'])
-                    
-                    user_states[user_id]['search_results'] = results
-                    user_states[user_id]['action'] = 'select_tp'
-                    
-                    await update.message.reply_text(
-                        f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
-                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                    )
+            
+            tp_list = list(set([r['Наименование ТП'] for r in results]))
+            
+            if len(tp_list) == 1:
+                # Если найдена только одна ТП, сразу показываем результаты
+                await show_tp_results(update, results, tp_list[0])
+            else:
+                # Показываем список найденных ТП
+                keyboard = []
+                for tp in tp_list[:10]:
+                    keyboard.append([tp])
+                keyboard.append(['⬅️ Назад'])
+                
+                user_states[user_id]['search_results'] = results
+                user_states[user_id]['action'] = 'select_tp'
+                
+                await update.message.reply_text(
+                    f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
         
         elif user_states[user_id].get('action') == 'select_tp':
             results = user_states[user_id].get('search_results', [])
