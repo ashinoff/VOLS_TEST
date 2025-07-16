@@ -2727,6 +2727,13 @@ if __name__ == '__main__':
     if not ZONES_CSV_URL:
         logger.error("ZONES_CSV_URL не задан в переменных окружения!")
         exit(1)
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN не задан в переменных окружения!")
+        exit(1)
+        
+    if not ZONES_CSV_URL:
+        logger.error("ZONES_CSV_URL не задан в переменных окружения!")
+        exit(1)
     
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
