@@ -210,6 +210,12 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     """Получить ключ переменной окружения для филиала"""
     logger.info(f"get_env_key_for_branch вызван с параметрами: branch='{branch}', network='{network}', is_reference={is_reference}")
     
+    # Сначала пробуем нормализовать название
+    normalized_branch = normalize_branch_name(branch)
+    if normalized_branch != branch:
+        logger.info(f"Филиал '{branch}' нормализован к '{normalized_branch}'")
+        branch = normalized_branch
+    
     translit_map = {
         'Юго-Западные': 'YUGO_ZAPADNYE',
         'Усть-Лабинские': 'UST_LABINSKIE', 
@@ -379,6 +385,10 @@ def get_user_permissions(user_id: str) -> Dict:
 
 def normalize_branch_name(branch_name: str) -> str:
     """Нормализует название филиала к стандартному формату"""
+    # Если уже нормализовано (из списка филиалов) - возвращаем как есть
+    if branch_name in ROSSETI_KUBAN_BRANCHES or branch_name in ROSSETI_YUG_BRANCHES:
+        return branch_name
+    
     singular_to_plural = {
         'Тимашевский': 'Тимашевские',
         'Тихорецкий': 'Тихорецкие',
@@ -1688,7 +1698,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text.startswith('⚡ '):
             branch = text[2:]
             user_states[user_id]['state'] = f'branch_{branch}'
-            user_states[user_id]['branch'] = branch
+            user_states[user_id]['branch'] = branch  # Сохраняем полное название с "ЭС"
             await update.message.reply_text(
                 f"{branch}",
                 reply_markup=get_branch_menu_keyboard()
@@ -1739,8 +1749,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
             
-            branch = normalize_branch_name(branch)
+            # Проверяем права пользователя - может у него указан конкретный филиал
+            user_permissions = get_user_permissions(user_id)
+            user_branch = user_permissions.get('branch')
+            user_res = user_permissions.get('res')
+            
+            # Если у пользователя указан конкретный филиал в правах - используем его
+            if user_branch and user_branch != 'All':
+                branch = normalize_branch_name(user_branch)
+                logger.info(f"Используем филиал из прав пользователя: {branch}")
+            else:
+                branch = normalize_branch_name(branch)
+            
             logger.info(f"Поиск ТП для филиала: {branch}, сеть: {network}")
+            if user_res and user_res != 'All':
+                logger.info(f"Пользователь имеет доступ только к РЭС: {user_res}")
             
             search_messages = [
                 "🔍 Ищу информацию...",
@@ -1777,11 +1800,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data = load_csv_from_url(csv_url)
             results = search_tp_in_data(text, data, 'Наименование ТП')
             
-            await loading_msg.delete()
-            
-            if not results:
-                await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
-                return
+            # Если у пользователя указан конкретный РЭС - фильтруем результаты
+            if user_res and user_res != 'All':
+                filtered_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+                
+                await loading_msg.delete()
+                
+                if not filtered_results:
+                    # Проверяем, были ли вообще результаты до фильтрации
+                    if results:
+                        await update.message.reply_text(
+                            f"❌ В {user_res} РЭС запрашиваемая ТП не найдена.\n\n"
+                            f"ℹ️ Данная ТП присутствует в других РЭС филиала {branch}."
+                        )
+                    else:
+                        await update.message.reply_text(
+                            f"❌ ТП не найдена в {user_res} РЭС.\n\n"
+                            "Попробуйте другой запрос."
+                        )
+                    return
+                
+                results = filtered_results
+            else:
+                await loading_msg.delete()
+                
+                if not results:
+                    await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
+                    return
             
             tp_list = list(set([r['Наименование ТП'] for r in results]))
             
@@ -1814,6 +1859,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         branch = user_states[user_id].get('branch')
         network = user_states[user_id].get('network')
         
+        # Проверяем права пользователя - может у него указан конкретный филиал
+        user_permissions = get_user_permissions(user_id)
+        user_branch = user_permissions.get('branch')
+        user_res = user_permissions.get('res')
+        
+        # Если у пользователя указан конкретный филиал в правах - используем его
+        if user_branch and user_branch != 'All':
+            branch = normalize_branch_name(user_branch)
+            logger.info(f"Используем филиал из прав пользователя для уведомления: {branch}")
+        
         notification_messages = [
             "🔍 Поиск в справочнике...",
             "📋 Проверяю базу данных...",
@@ -1840,11 +1895,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = load_csv_from_url(csv_url)
         results = search_tp_in_data(text, data, 'Наименование ТП')
         
-        await loading_msg.delete()
-        
-        if not results:
-            await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
-            return
+        # Если у пользователя указан конкретный РЭС - фильтруем результаты
+        if user_res and user_res != 'All':
+            filtered_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+            
+            await loading_msg.delete()
+            
+            if not filtered_results:
+                if results:
+                    await update.message.reply_text(
+                        f"❌ В {user_res} РЭС запрашиваемая ТП не найдена.\n\n"
+                        f"ℹ️ Данная ТП присутствует в других РЭС филиала {branch}.\n"
+                        "Для отправки уведомления выберите ТП из вашего РЭС."
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"❌ ТП не найдена в {user_res} РЭС.\n\n"
+                        "Попробуйте другой запрос."
+                    )
+                return
+            
+            results = filtered_results
+        else:
+            await loading_msg.delete()
+            
+            if not results:
+                await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
+                return
         
         tp_list = list(set([r['Наименование ТП'] for r in results]))
         
