@@ -1,26 +1,6 @@
 """
 ВОЛС Ассистент - Telegram бот для управления уведомлениями о бездоговорных ВОЛС
 Версия: 2.1.0
-
-Основные функции:
-- Поиск информации по ТП в базах данных филиалов
-- Отправка уведомлений ответственным лицам с фото и геолокацией
-- Генерация отчетов по уведомлениям и активности пользователей
-- Доступ к справочным документам
-
-Административные функции (visibility='All'):
-- СТАТУС ПОЛЬЗОВАТЕЛЕЙ - Excel отчет кто запускал бота
-- УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ - массовая отправка сообщения о необходимости нажать /start
-- МАССОВАЯ РАССЫЛКА - произвольное сообщение всем или только активным пользователям
-
-Требования:
-- Python 3.8+
-- Telegram Bot Token
-- CSV файл с зонами доступа пользователей
-- Переменные окружения для URL документов и баз данных
-
-Примечание: данные о запусках бота сохраняются только в текущей сессии.
-Для постоянного хранения требуется внешняя БД.
 """
 
 BOT_VERSION = "2.1.0"
@@ -91,7 +71,7 @@ user_states = {}
 
 # Кеш данных пользователей
 users_cache = {}
-users_cache_backup = {}  # Резервная копия кэша
+users_cache_backup = {}
 
 # Последние сгенерированные отчеты
 last_reports = {}
@@ -101,17 +81,12 @@ documents_cache = {}
 documents_cache_time = {}
 
 # Хранилище активности пользователей
-user_activity = {}  # {user_id: {'last_activity': datetime, 'count': int}}
-
-# Административные функции (для пользователей с visibility='All'):
-# 1. СТАТУС ПОЛЬЗОВАТЕЛЕЙ - показывает кто из базы запускал бота (данные сбрасываются после деплоя)
-# 2. УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ - отправляет всем из базы сообщение о необходимости нажать /start
-# 3. МАССОВАЯ РАССЫЛКА - позволяет отправить произвольное сообщение либо тем кто запускал бота, либо всем из базы
+user_activity = {}
 
 # Словарь для отслеживания кто запускал бота
-bot_users = {}  # {user_id: {'first_start': datetime, 'last_start': datetime, 'username': str, 'first_name': str}}
+bot_users = {}
 
-# Справочные документы - настройте в переменных окружения
+# Справочные документы
 REFERENCE_DOCS = {
     'План по выручке ВОЛС на ВЛ 24-26 годы': os.environ.get('DOC_PLAN_VYRUCHKA_URL'),
     'Регламент ВОЛС': os.environ.get('DOC_REGLAMENT_VOLS_URL'),
@@ -121,21 +96,14 @@ REFERENCE_DOCS = {
     'Отчет по контрагентам': os.environ.get('DOC_OTCHET_KONTRAGENTY_URL'),
 }
 
-# URL руководства пользователя (веб-страница)
+# URL руководства пользователя
 USER_GUIDE_URL = os.environ.get('USER_GUIDE_URL', 'https://your-domain.com/vols-guide')
 
-# Файл для сохранения данных о пользователях бота
-# ВАЖНО: На Render.com данные не сохраняются между деплоями!
-# Для постоянного хранения нужно использовать:
-# 1. Внешнюю базу данных (PostgreSQL, MongoDB и т.д.)
-# 2. Persistent disk (платная функция на Render)
-# 3. Внешнее хранилище (S3, Google Cloud Storage и т.д.)
 BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
 
 def save_bot_users():
     """Сохранить данные о пользователях бота в файл"""
     try:
-        # Преобразуем datetime в строки для сериализации
         serializable_data = {}
         for uid, data in bot_users.items():
             serializable_data[uid] = {
@@ -160,14 +128,12 @@ def load_bot_users():
             with open(BOT_USERS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Преобразуем строки обратно в datetime с учетом часового пояса
             bot_users = {}
             for uid, user_data in data.items():
                 try:
                     first_start = datetime.fromisoformat(user_data['first_start'])
                     last_start = datetime.fromisoformat(user_data['last_start'])
                     
-                    # Если datetime не имеет часового пояса, добавляем московский
                     if first_start.tzinfo is None:
                         first_start = MOSCOW_TZ.localize(first_start)
                     if last_start.tzinfo is None:
@@ -209,19 +175,15 @@ async def get_cached_document(doc_name: str, doc_url: str) -> Optional[BytesIO]:
     """Получить документ из кэша или загрузить"""
     now = datetime.now()
     
-    # Проверяем кэш
     if doc_name in documents_cache:
         cache_time = documents_cache_time.get(doc_name)
         if cache_time and (now - cache_time) < timedelta(hours=1):
-            # Возвращаем копию из кэша
             cached_doc = documents_cache[doc_name]
             cached_doc.seek(0)
             return BytesIO(cached_doc.read())
     
-    # Загружаем документ
     logger.info(f"Загружаем документ {doc_name} из {doc_url}")
     
-    # Определяем тип документа по URL
     if 'docs.google.com/document' in doc_url and '/d/' in doc_url:
         doc_id = doc_url.split('/d/')[1].split('/')[0]
         download_url = f"https://docs.google.com/document/d/{doc_id}/export?format=pdf"
@@ -237,7 +199,6 @@ async def get_cached_document(doc_name: str, doc_url: str) -> Optional[BytesIO]:
     document = await download_document(download_url)
     
     if document:
-        # Сохраняем в кэш
         document.seek(0)
         documents_cache[doc_name] = BytesIO(document.read())
         documents_cache_time[doc_name] = now
@@ -249,45 +210,43 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     """Получить ключ переменной окружения для филиала"""
     logger.info(f"get_env_key_for_branch вызван с параметрами: branch='{branch}', network='{network}', is_reference={is_reference}")
     
-    # Транслитерация русских названий в латиницу
     translit_map = {
         'Юго-Западные': 'YUGO_ZAPADNYE',
         'Усть-Лабинские': 'UST_LABINSKIE', 
         'Тимашевские': 'TIMASHEVSKIE',
-        'Тимашевский': 'TIMASHEVSKIE',  # Добавляем вариант в единственном числе
+        'Тимашевский': 'TIMASHEVSKIE',
         'Тихорецкие': 'TIKHORETSKIE',
-        'Тихорецкий': 'TIKHORETSKIE',   # Добавляем вариант в единственном числе
+        'Тихорецкий': 'TIKHORETSKIE',
         'Сочинские': 'SOCHINSKIE',
-        'Сочинский': 'SOCHINSKIE',       # Добавляем вариант в единственном числе
+        'Сочинский': 'SOCHINSKIE',
         'Славянские': 'SLAVYANSKIE',
-        'Славянский': 'SLAVYANSKIE',     # Добавляем вариант в единственном числе
+        'Славянский': 'SLAVYANSKIE',
         'Ленинградские': 'LENINGRADSKIE',
-        'Ленинградский': 'LENINGRADSKIE', # Добавляем вариант в единственном числе
+        'Ленинградский': 'LENINGRADSKIE',
         'Лабинские': 'LABINSKIE',
-        'Лабинский': 'LABINSKIE',         # Добавляем вариант в единственном числе
+        'Лабинский': 'LABINSKIE',
         'Краснодарские': 'KRASNODARSKIE',
-        'Краснодарский': 'KRASNODARSKIE', # Добавляем вариант в единственном числе
+        'Краснодарский': 'KRASNODARSKIE',
         'Армавирские': 'ARMAVIRSKIE',
-        'Армавирский': 'ARMAVIRSKIE',     # Добавляем вариант в единственном числе
+        'Армавирский': 'ARMAVIRSKIE',
         'Адыгейские': 'ADYGEYSKIE',
-        'Адыгейский': 'ADYGEYSKIE',       # Добавляем вариант в единственном числе
+        'Адыгейский': 'ADYGEYSKIE',
         'Центральные': 'TSENTRALNYE',
-        'Центральный': 'TSENTRALNYE',     # Добавляем вариант в единственном числе
+        'Центральный': 'TSENTRALNYE',
         'Западные': 'ZAPADNYE',
-        'Западный': 'ZAPADNYE',           # Добавляем вариант в единственном числе
+        'Западный': 'ZAPADNYE',
         'Восточные': 'VOSTOCHNYE',
-        'Восточный': 'VOSTOCHNYE',       # Добавляем вариант в единственном числе
+        'Восточный': 'VOSTOCHNYE',
         'Южные': 'YUZHNYE',
-        'Южный': 'YUZHNYE',              # Добавляем вариант в единственном числе
+        'Южный': 'YUZHNYE',
         'Северо-Восточные': 'SEVERO_VOSTOCHNYE',
-        'Северо-Восточный': 'SEVERO_VOSTOCHNYE', # Добавляем вариант в единственном числе
+        'Северо-Восточный': 'SEVERO_VOSTOCHNYE',
         'Юго-Восточные': 'YUGO_VOSTOCHNYE',
-        'Юго-Восточный': 'YUGO_VOSTOCHNYE',      # Добавляем вариант в единственном числе
+        'Юго-Восточный': 'YUGO_VOSTOCHNYE',
         'Северные': 'SEVERNYE',
-        'Северный': 'SEVERNYE'            # Добавляем вариант в единственном числе
+        'Северный': 'SEVERNYE'
     }
     
-    # Убираем "ЭС" и ищем в словаре транслитерации
     branch_clean = branch.replace(' ЭС', '').strip()
     logger.info(f"Очищенное название филиала: '{branch_clean}'")
     
@@ -310,7 +269,6 @@ def load_csv_from_url(url: str) -> List[Dict]:
         csv_file = io.StringIO(response.text)
         reader = csv.DictReader(csv_file)
         
-        # Нормализуем заголовки - убираем лишние пробелы
         data = []
         for row in reader:
             normalized_row = {key.strip(): value.strip() if value else '' for key, value in row.items()}
@@ -341,38 +299,32 @@ def load_users_data():
         
         if not data:
             logger.error("Получен пустой список данных из CSV")
-            # Восстанавливаем из резервной копии
             if users_cache_backup:
                 logger.warning("Используем резервную копию данных пользователей")
                 users_cache = users_cache_backup.copy()
             return
             
-        # Сохраняем текущий кэш как резервную копию перед обновлением
         if users_cache:
             users_cache_backup = users_cache.copy()
             
         users_cache = {}
         
-        # Логируем первую строку для проверки структуры
         if data:
             logger.info(f"Структура CSV (первая строка): {list(data[0].keys())}")
         
         for row in data:
             telegram_id = row.get('Telegram ID', '').strip()
             if telegram_id:
-                # Формируем полное ФИО из колонок E (ФИО) и I (Фамилия)
                 name_parts = []
-                fio = row.get('ФИО', '').strip()  # Колонка E - имя отчество
+                fio = row.get('ФИО', '').strip()
                 
-                # Проверяем наличие колонки Фамилия
                 if 'Фамилия' in row:
-                    surname = row.get('Фамилия', '').strip()  # Колонка I - фамилия
+                    surname = row.get('Фамилия', '').strip()
                 else:
                     surname = ''
-                    if telegram_id in ['248207151', '1409325335']:  # Логируем только для админов
+                    if telegram_id in ['248207151', '1409325335']:
                         logger.warning("Колонка 'Фамилия' отсутствует в CSV файле")
                 
-                # Объединяем имя отчество и фамилию
                 if fio:
                     name_parts.append(fio)
                 if surname:
@@ -384,19 +336,17 @@ def load_users_data():
                     'visibility': row.get('Видимость', '').strip(),
                     'branch': row.get('Филиал', '').strip(),
                     'res': row.get('РЭС', '').strip(),
-                    'name': full_name,  # Полное ФИО для отчетов
-                    'name_without_surname': fio if fio else 'Неизвестный',  # Имя без фамилии для приветствия
+                    'name': full_name,
+                    'name_without_surname': fio if fio else 'Неизвестный',
                     'responsible': row.get('Ответственный', '').strip(),
-                    'email': row.get('Email', '').strip()  # Добавляем email
+                    'email': row.get('Email', '').strip()
                 }
         
-        # Создаем резервную копию успешно загруженных данных
         if users_cache:
             users_cache_backup = users_cache.copy()
             
         logger.info(f"Загружено {len(users_cache)} пользователей")
         
-        # Логируем несколько примеров для проверки
         if users_cache:
             sample_users = list(users_cache.items())[:3]
             for uid, udata in sample_users:
@@ -404,7 +354,6 @@ def load_users_data():
                 
     except Exception as e:
         logger.error(f"Ошибка загрузки данных пользователей: {e}", exc_info=True)
-        # При ошибке восстанавливаем из резервной копии
         if users_cache_backup:
             logger.warning("Восстанавливаем данные из резервной копии после ошибки")
             users_cache = users_cache_backup.copy()
@@ -429,8 +378,7 @@ def get_user_permissions(user_id: str) -> Dict:
     return user_data
 
 def normalize_branch_name(branch_name: str) -> str:
-    """Нормализует название филиала к стандартному формату (множественное число)"""
-    # Словарь для преобразования единственного числа во множественное
+    """Нормализует название филиала к стандартному формату"""
     singular_to_plural = {
         'Тимашевский': 'Тимашевские',
         'Тихорецкий': 'Тихорецкие',
@@ -452,20 +400,16 @@ def normalize_branch_name(branch_name: str) -> str:
         'Усть-Лабинский': 'Усть-Лабинские'
     }
     
-    # Убираем ЭС для проверки
     branch_clean = branch_name.replace(' ЭС', '').strip()
     
-    # Если есть в словаре, преобразуем
     if branch_clean in singular_to_plural:
         normalized = singular_to_plural[branch_clean]
-        # Возвращаем с ЭС если было в оригинале
         return f"{normalized} ЭС" if ' ЭС' in branch_name else normalized
     
-    return branch_name  # Возвращаем как есть, если нет в словаре
+    return branch_name
 
 def normalize_tp_name(name: str) -> str:
     """Нормализовать название ТП для поиска"""
-    # Убираем все символы кроме цифр
     return ''.join(filter(str.isdigit, name))
 
 def search_tp_in_data(tp_query: str, data: List[Dict], column: str) -> List[Dict]:
@@ -496,7 +440,7 @@ def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     branch = permissions.get('branch')
     res = permissions.get('res')
     
-    # РОССЕТИ кнопки - исправленная логика видимости
+    # РОССЕТИ кнопки
     if visibility == 'All':
         keyboard.append(['🏢 РОССЕТИ КУБАНЬ'])
         keyboard.append(['🏢 РОССЕТИ ЮГ'])
@@ -508,7 +452,7 @@ def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     # Телефоны контрагентов
     keyboard.append(['📞 ТЕЛЕФОНЫ КОНТРАГЕНТОВ'])
     
-    # Отчеты - показываем только если филиал = All
+    # Отчеты
     if branch == 'All' and visibility in ['All', 'RK', 'UG']:
         keyboard.append(['📊 ОТЧЕТЫ'])
     
@@ -518,11 +462,10 @@ def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     # Персональные настройки
     keyboard.append(['⚙️ МОИ НАСТРОЙКИ'])
     
-    # Административные функции для visibility='All'
+    # Администрирование
     if visibility == 'All':
-        keyboard.append(['📊 СТАТУС ПОЛЬЗОВАТЕЛЕЙ', '🔄 УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ'])
-        keyboard.append(['📢 МАССОВАЯ РАССЫЛКА'])
-    
+        keyboard.append(['🛠 АДМИНИСТРИРОВАНИЕ'])
+         
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_branch_keyboard(branches: List[str]) -> ReplyKeyboardMarkup:
@@ -530,16 +473,13 @@ def get_branch_keyboard(branches: List[str]) -> ReplyKeyboardMarkup:
     keyboard = []
     
     if len(branches) == 11:  # РОССЕТИ КУБАНЬ
-        # 5 слева, 5 справа, 1 внизу (Сочинские)
         for i in range(0, 10, 2):
             keyboard.append([f'⚡ {branches[i]}', f'⚡ {branches[i+1]}'])
-        keyboard.append([f'⚡ {branches[10]}'])  # Сочинские ЭС
+        keyboard.append([f'⚡ {branches[10]}'])
     elif len(branches) == 8:  # РОССЕТИ ЮГ  
-        # 4 слева, 4 справа
         for i in range(0, 8, 2):
             keyboard.append([f'⚡ {branches[i]}', f'⚡ {branches[i+1]}'])
     else:
-        # Для других случаев - по одному в строку
         for branch in branches:
             keyboard.append([f'⚡ {branch}'])
     
@@ -586,18 +526,24 @@ def get_settings_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def get_admin_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура администрирования"""
+    keyboard = [
+        ['📊 СТАТУС ПОЛЬЗОВАТЕЛЕЙ'],
+        ['🔄 УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ'],
+        ['📢 МАССОВАЯ РАССЫЛКА'],
+        ['⬅️ Назад']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 def get_reference_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура справки с документами"""
     keyboard = []
     
-    # Добавляем только те документы, для которых есть ссылки
-    # Размещаем по одному в строке из-за длинных названий
     for doc_name, doc_url in REFERENCE_DOCS.items():
         if doc_url:
-            # Сокращаем название для кнопки если оно слишком длинное
             button_text = doc_name
             if len(doc_name) > 30:
-                # Сокращенные версии для длинных названий
                 if 'План по выручке' in doc_name:
                     button_text = '📊 План выручки ВОЛС 24-26'
                 elif 'Форма акта инвентаризации' in doc_name:
@@ -647,20 +593,16 @@ async def send_email(to_email: str, subject: str, body: str, attachment_data: By
         return False
     
     try:
-        # Создаем сообщение
         msg = MIMEMultipart()
         msg['From'] = SMTP_EMAIL
         msg['To'] = to_email
         msg['Subject'] = subject
         
-        # Добавляем текст
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
         
-        # Добавляем вложение если есть
         if attachment_data and attachment_name:
             attachment_data.seek(0)
             
-            # Определяем MIME тип по расширению файла
             if attachment_name.endswith('.xlsx'):
                 mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                 mime_subtype = 'xlsx'
@@ -687,16 +629,13 @@ async def send_email(to_email: str, subject: str, body: str, attachment_data: By
             part.add_header('Content-Disposition', f'attachment; filename="{attachment_name}"')
             msg.attach(part)
         
-        # Отправляем (разная логика для разных портов)
         if SMTP_PORT == 465:
-            # SSL соединение (Mail.ru)
             import ssl
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
                 server.login(SMTP_EMAIL, SMTP_PASSWORD)
                 server.send_message(msg)
         else:
-            # TLS соединение (Яндекс, Gmail)
             with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
                 server.starttls()
                 server.login(SMTP_EMAIL, SMTP_PASSWORD)
@@ -715,11 +654,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user_id = str(update.effective_user.id)
     
-    # Логируем для отладки
     logger.info(f"Команда /start от пользователя {user_id} ({update.effective_user.first_name})")
     logger.info(f"Размер users_cache: {len(users_cache)}")
     
-    # Сохраняем информацию о пользователе, который запустил бота
     current_time = get_moscow_time()
     if user_id not in bot_users:
         bot_users[user_id] = {
@@ -731,7 +668,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         bot_users[user_id]['last_start'] = current_time
     
-    # Сохраняем данные в файл
     save_bot_users()
     
     permissions = get_user_permissions(user_id)
@@ -758,10 +694,8 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user_data = user_states.get(user_id, {})
     
-    # Получаем данные отправителя
     sender_info = get_user_permissions(user_id)
     
-    # Получаем данные уведомления
     tp_data = user_data.get('tp_data', {})
     selected_tp = user_data.get('selected_tp')
     selected_vl = user_data.get('selected_vl')
@@ -769,14 +703,12 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_id = user_data.get('photo_id')
     comment = user_data.get('comment', '')
     
-    # Получаем данные из справочника (колонки A и B)
-    branch_from_reference = tp_data.get('Филиал', '').strip()  # Колонка A
-    res_from_reference = tp_data.get('РЭС', '').strip()  # Колонка B
+    branch_from_reference = tp_data.get('Филиал', '').strip()
+    res_from_reference = tp_data.get('РЭС', '').strip()
     
     branch = user_data.get('branch')
     network = user_data.get('network')
     
-    # Показываем анимированное сообщение отправки
     sending_messages = [
         "📨 Подготовка уведомления...",
         "🔍 Поиск ответственных лиц...",
@@ -794,21 +726,18 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     
-    # Ищем всех ответственных в базе
     responsible_users = []
     
     logger.info(f"Ищем ответственных для:")
     logger.info(f"  Филиал из справочника: '{branch_from_reference}'")
     logger.info(f"  РЭС из справочника: '{res_from_reference}'")
     
-    # Проходим по всем пользователям и проверяем колонку "Ответственный"
     for uid, udata in users_cache.items():
         responsible_for = udata.get('responsible', '').strip()
         
         if not responsible_for:
             continue
             
-        # Проверяем совпадение с филиалом или РЭС из справочника
         if responsible_for == branch_from_reference or responsible_for == res_from_reference:
             responsible_users.append({
                 'id': uid,
@@ -818,7 +747,6 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
             logger.info(f"Найден ответственный: {udata.get('name')} (ID: {uid}) - отвечает за '{responsible_for}'")
     
-    # Формируем текст уведомления с московским временем
     moscow_time = get_moscow_time()
     notification_text = f"""🚨 НОВОЕ УВЕДОМЛЕНИЕ О БЕЗДОГОВОРНОМ ВОЛС
 
@@ -839,10 +767,8 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if comment:
         notification_text += f"\n\n💬 Комментарий: {comment}"
     
-    # Формируем список получателей для записи в хранилище (без ID)
     recipients_info = ", ".join([u['name'] for u in responsible_users]) if responsible_users else "Не найдены"
     
-    # Сохраняем уведомление в хранилище
     notification_data = {
         'branch': branch,
         'res': res_from_reference,
@@ -860,27 +786,23 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     notifications_storage[network].append(notification_data)
     
-    # Обновляем активность пользователя
     if user_id not in user_activity:
         user_activity[user_id] = {'last_activity': get_moscow_time(), 'count': 0}
     user_activity[user_id]['count'] += 1
     user_activity[user_id]['last_activity'] = get_moscow_time()
     
-    # Отправляем уведомления всем найденным ответственным
     success_count = 0
     email_success_count = 0
     failed_users = []
     
     for responsible in responsible_users:
         try:
-            # Отправляем текст
             await context.bot.send_message(
                 chat_id=responsible['id'],
                 text=notification_text,
                 parse_mode='Markdown'
             )
             
-            # Отправляем локацию
             if location:
                 await context.bot.send_location(
                     chat_id=responsible['id'],
@@ -888,7 +810,6 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     longitude=location.get('longitude')
                 )
             
-            # Отправляем фото
             if photo_id:
                 await context.bot.send_photo(
                     chat_id=responsible['id'],
@@ -898,7 +819,6 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             success_count += 1
             
-            # Отправляем email если есть адрес
             if responsible['email']:
                 email_subject = f"ВОЛС: Уведомление от {sender_info['name']}"
                 email_body = f"""Добрый день, {responsible['name']}!
@@ -932,7 +852,6 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
 С уважением,
 Бот ВОЛС Ассистент"""
                 
-                # Исправлено: отправляем email асинхронно
                 email_sent = await send_email(responsible['email'], email_subject, email_body)
                 if email_sent:
                     email_success_count += 1
@@ -944,10 +863,8 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка отправки уведомления пользователю {responsible['name']} ({responsible['id']}): {e}")
             failed_users.append(f"{responsible['name']} ({responsible['id']}): {str(e)}")
     
-    # Удаляем анимированное сообщение
     await loading_msg.delete()
     
-    # Формируем результат
     if responsible_users:
         if success_count == len(responsible_users):
             result_text = f"""✅ Уведомления успешно отправлены!
@@ -978,7 +895,6 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - РЭС из справочника: "{res_from_reference}"
 - Всего пользователей в базе: {len(users_cache)}"""
     
-    # Очищаем состояние и возвращаемся в меню филиала
     user_states[user_id] = {'state': f'branch_{branch}', 'branch': branch, 'network': network}
     
     await update.message.reply_text(
@@ -991,7 +907,6 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
     try:
         user_id = str(update.effective_user.id)
         
-        # Проверяем права доступа
         if permissions['branch'] != 'All':
             await update.message.reply_text("❌ У вас нет доступа к отчетам")
             return
@@ -1002,7 +917,6 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
             await update.message.reply_text("📊 Нет данных для отчета")
             return
         
-        # Показываем анимированное сообщение
         report_messages = [
             "📊 Собираю данные...",
             "📈 Формирую статистику...",
@@ -1020,10 +934,8 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
             except Exception:
                 pass
         
-        # Создаем DataFrame
         df = pd.DataFrame(notifications)
         
-        # Проверяем наличие необходимых колонок
         required_columns = ['branch', 'res', 'tp', 'vl', 'sender_name', 'recipient_name', 'datetime', 'coordinates']
         existing_columns = [col for col in required_columns if col in df.columns]
         
@@ -1034,7 +946,6 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
             
         df = df[existing_columns]
         
-        # Переименовываем колонки
         column_mapping = {
             'branch': 'ФИЛИАЛ',
             'res': 'РЭС',
@@ -1047,16 +958,13 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
         }
         df.rename(columns=column_mapping, inplace=True)
         
-        # Создаем Excel файл
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Уведомления', index=False)
             
-            # Форматирование
             workbook = writer.book
             worksheet = writer.sheets['Уведомления']
             
-            # Формат заголовков
             header_format = workbook.add_format({
                 'bg_color': '#FFE6E6',
                 'bold': True,
@@ -1066,28 +974,22 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
                 'border': 1
             })
             
-            # Применяем формат к заголовкам
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
             
-            # Автоподбор ширины колонок
             for i, col in enumerate(df.columns):
                 column_len = df[col].astype(str).map(len).max()
                 column_len = max(column_len, len(col)) + 2
                 worksheet.set_column(i, i, column_len)
         
-        # ВАЖНО: Перемещаем указатель в начало после записи
         output.seek(0)
         
-        # Удаляем анимированное сообщение
         await loading_msg.delete()
         
-        # Отправляем файл в чат
         network_name = "РОССЕТИ КУБАНЬ" if network == 'RK' else "РОССЕТИ ЮГ"
         moscow_time = get_moscow_time()
         filename = f"Уведомления_{network_name}_{moscow_time.strftime('%Y%m%d_%H%M%S')}.xlsx"
         
-        # Сохраняем отчет в состоянии пользователя для возможности отправки на почту
         user_states[user_id]['last_report'] = {
             'data': output.getvalue(),
             'filename': filename,
@@ -1095,7 +997,6 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
         }
         user_states[user_id]['state'] = 'report_actions'
         
-        # Создаем InputFile для правильной отправки
         await update.message.reply_document(
             document=InputFile(output, filename=filename),
             caption=f"📊 Отчет по уведомлениям {network_name}\n🕐 Сформировано: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК",
@@ -1113,26 +1014,20 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
     try:
         user_id = str(update.effective_user.id)
         
-        # Проверяем права доступа
         if permissions['branch'] != 'All':
             await update.message.reply_text("❌ У вас нет доступа к отчетам")
             return
         
-        # Показываем анимированное сообщение
         loading_msg = await update.message.reply_text("📈 Формирую полный отчет активности...")
         
-        # Собираем данные всех пользователей из CSV
         all_users_data = []
         
         for uid, user_info in users_cache.items():
-            # Фильтруем по сети
             if user_info.get('visibility') not in ['All', network]:
                 continue
             
-            # Получаем данные активности
             activity = user_activity.get(uid, None)
             
-            # Определяем статус активности
             if activity:
                 is_active = True
                 notification_count = activity['count']
@@ -1158,20 +1053,16 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text("📈 Нет данных для отчета")
             return
         
-        # Создаем DataFrame и сортируем
         df = pd.DataFrame(all_users_data)
         df = df.sort_values(['Статус', 'Количество уведомлений'], ascending=[True, False])
         
-        # Создаем Excel файл с форматированием
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Активность пользователей', index=False)
             
-            # Получаем объекты workbook и worksheet
             workbook = writer.book
             worksheet = writer.sheets['Активность пользователей']
             
-            # Формат заголовков
             header_format = workbook.add_format({
                 'bg_color': '#4B4B4B',
                 'font_color': 'white',
@@ -1182,46 +1073,38 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
                 'border': 1
             })
             
-            # Форматы для активных и неактивных пользователей
             active_format = workbook.add_format({
-                'bg_color': '#E8F5E9',  # Нежно зеленый
+                'bg_color': '#E8F5E9',
                 'border': 1
             })
             
             inactive_format = workbook.add_format({
-                'bg_color': '#FFEBEE',  # Нежно красный
+                'bg_color': '#FFEBEE',
                 'border': 1
             })
             
-            # Применяем формат к заголовкам
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
             
-            # Применяем цветовую индикацию к строкам
             for row_num, (index, row) in enumerate(df.iterrows(), start=1):
                 cell_format = active_format if row['Статус'] == 'Активный' else inactive_format
                 for col_num, value in enumerate(row):
                     worksheet.write(row_num, col_num, value, cell_format)
             
-            # Автоподбор ширины колонок
             for i, col in enumerate(df.columns):
                 column_len = df[col].astype(str).map(len).max()
                 column_len = max(column_len, len(col)) + 2
                 worksheet.set_column(i, i, min(column_len, 40))
             
-            # Добавляем автофильтр
             worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
         
         output.seek(0)
         
-        # Удаляем анимированное сообщение
         await loading_msg.delete()
         
-        # Подсчитываем статистику
         active_count = len(df[df['Статус'] == 'Активный'])
         inactive_count = len(df[df['Статус'] == 'Неактивный'])
         
-        # Отправляем файл
         network_name = "РОССЕТИ КУБАНЬ" if network == 'RK' else "РОССЕТИ ЮГ"
         moscow_time = get_moscow_time()
         filename = f"Полный_реестр_активности_{network_name}_{moscow_time.strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -1235,7 +1118,6 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
 📊 Отчет содержит полный реестр пользователей с цветовой индикацией активности
 🕐 Сформировано: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК"""
         
-        # Сохраняем отчет в состоянии пользователя для возможности отправки на почту
         user_states[user_id]['last_report'] = {
             'data': output.getvalue(),
             'filename': filename,
@@ -1261,12 +1143,10 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
         user_id = str(update.effective_user.id)
         permissions = get_user_permissions(user_id)
         
-        # Проверяем права доступа
         if permissions.get('visibility') != 'All':
             await update.message.reply_text("❌ У вас нет доступа к этой функции")
             return
         
-        # Проверяем что база пользователей загружена
         if not users_cache:
             await update.message.reply_text(
                 "❌ База пользователей не загружена.\n\n"
@@ -1274,14 +1154,11 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
         
-        # Показываем анимированное сообщение
         loading_msg = await update.message.reply_text("📊 Формирую отчет статуса пользователей...")
         
-        # Собираем данные всех пользователей
         ping_data = []
         
         for uid, user_info in users_cache.items():
-            # Проверяем, заходил ли пользователь в бота
             bot_info = bot_users.get(uid)
             
             if bot_info:
@@ -1309,20 +1186,16 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("📊 Нет данных для отчета.\n\nВозможно база пользователей не загружена.")
             return
         
-        # Создаем DataFrame и сортируем
         df = pd.DataFrame(ping_data)
         df = df.sort_values(['Статус', 'ФИО'])
         
-        # Создаем Excel файл с форматированием
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Статус пользователей', index=False)
             
-            # Получаем объекты workbook и worksheet
             workbook = writer.book
             worksheet = writer.sheets['Статус пользователей']
             
-            # Формат заголовков
             header_format = workbook.add_format({
                 'bg_color': '#4B4B4B',
                 'font_color': 'white',
@@ -1333,47 +1206,39 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
                 'border': 1
             })
             
-            # Форматы для активных и неактивных
             active_format = workbook.add_format({
-                'bg_color': '#E8F5E9',  # Нежно зеленый
+                'bg_color': '#E8F5E9',
                 'border': 1
             })
             
             inactive_format = workbook.add_format({
-                'bg_color': '#FFEBEE',  # Нежно красный
+                'bg_color': '#FFEBEE',
                 'border': 1
             })
             
-            # Применяем формат к заголовкам
             for col_num, value in enumerate(df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
             
-            # Применяем цветовую индикацию к строкам
             for row_num, (index, row) in enumerate(df.iterrows(), start=1):
                 cell_format = active_format if '✅' in row['Статус'] else inactive_format
                 for col_num, value in enumerate(row):
                     worksheet.write(row_num, col_num, value, cell_format)
             
-            # Автоподбор ширины колонок
             for i, col in enumerate(df.columns):
                 column_len = df[col].astype(str).map(len).max()
                 column_len = max(column_len, len(col)) + 2
                 worksheet.set_column(i, i, min(column_len, 40))
             
-            # Добавляем автофильтр
             worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
         
         output.seek(0)
         
-        # Удаляем анимированное сообщение
         await loading_msg.delete()
         
-        # Подсчитываем статистику
         active_count = len(df[df['Статус'] == '✅ Активирован'])
         inactive_count = len(df[df['Статус'] == '❌ Не активирован'])
         total_count = len(df)
         
-        # Отправляем файл
         moscow_time = get_moscow_time()
         filename = f"Статус_пользователей_{moscow_time.strftime('%Y%m%d_%H%M%S')}.xlsx"
         
@@ -1406,12 +1271,10 @@ async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     permissions = get_user_permissions(user_id)
     
-    # Проверяем права доступа
     if permissions.get('visibility') != 'All':
         await update.message.reply_text("❌ У вас нет доступа к этой функции")
         return
     
-    # Проверяем что база пользователей загружена
     if not users_cache:
         await update.message.reply_text(
             "❌ База пользователей не загружена.\n\n"
@@ -1419,10 +1282,8 @@ async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Показываем анимированное сообщение
     loading_msg = await update.message.reply_text("🔄 Начинаю отправку уведомлений о перезапуске...")
     
-    # Текст уведомления
     restart_message = """🔄 *Обновление бота ВОЛС Ассистент*
 
 Бот был обновлен и перезапущен.
@@ -1434,17 +1295,14 @@ async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 _Приносим извинения за неудобства._"""
     
-    # Счетчики
     success_count = 0
     failed_count = 0
     failed_users = []
     
-    # Получаем всех пользователей из базы
     total_users = len(users_cache)
     
     for i, (uid, user_info) in enumerate(users_cache.items()):
         try:
-            # Обновляем статус каждые 20 пользователей
             if i % 20 == 0:
                 try:
                     await loading_msg.edit_text(
@@ -1454,7 +1312,6 @@ _Приносим извинения за неудобства._"""
                 except:
                     pass
             
-            # Отправляем сообщение
             await context.bot.send_message(
                 chat_id=uid,
                 text=restart_message,
@@ -1462,7 +1319,6 @@ _Приносим извинения за неудобства._"""
             )
             success_count += 1
             
-            # Небольшая задержка чтобы не превысить лимиты Telegram
             await asyncio.sleep(0.05)
             
         except Exception as e:
@@ -1470,10 +1326,8 @@ _Приносим извинения за неудобства._"""
             failed_users.append(f"{user_info.get('name', 'ID: ' + uid)}")
             logger.debug(f"Не удалось отправить пользователю {uid}: {e}")
     
-    # Удаляем анимированное сообщение
     await loading_msg.delete()
     
-    # Формируем отчет о рассылке
     result_text = f"""✅ Уведомления о перезапуске отправлены!
 
 📊 Статистика:
@@ -1501,12 +1355,10 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     permissions = get_user_permissions(user_id)
     
-    # Проверяем права доступа
     if permissions.get('visibility') != 'All':
         await update.message.reply_text("❌ У вас нет доступа к этой функции")
         return
     
-    # Проверяем что база пользователей загружена для рассылки всем
     state_data = user_states.get(user_id, {})
     broadcast_type = state_data.get('broadcast_type', 'bot_users')
     
@@ -1517,7 +1369,6 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Получаем текст сообщения для рассылки
     broadcast_text = update.message.text
     
     if broadcast_text == '❌ Отмена':
@@ -1528,21 +1379,16 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Показываем анимированное сообщение
     loading_msg = await update.message.reply_text("📤 Начинаю рассылку...")
     
-    # Счетчики
     success_count = 0
     failed_count = 0
     failed_users = []
     
-    # Определяем получателей в зависимости от типа рассылки
     if broadcast_type == 'all_users':
-        # Отправляем всем из базы данных
         recipients = users_cache
         recipient_type = "всем пользователям из базы"
     else:
-        # Отправляем только тем, кто запускал бота
         recipients = {uid: users_cache.get(uid, {'name': f'ID: {uid}'}) for uid in bot_users}
         recipient_type = "пользователям, запускавшим бота"
     
@@ -1550,7 +1396,6 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for i, (uid, user_info) in enumerate(recipients.items()):
         try:
-            # Обновляем статус каждые 20 пользователей
             if i % 20 == 0:
                 try:
                     await loading_msg.edit_text(
@@ -1560,7 +1405,6 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except:
                     pass
             
-            # Отправляем сообщение
             await context.bot.send_message(
                 chat_id=uid,
                 text=broadcast_text,
@@ -1568,7 +1412,6 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             success_count += 1
             
-            # Небольшая задержка чтобы не превысить лимиты
             await asyncio.sleep(0.05)
             
         except Exception as e:
@@ -1577,10 +1420,8 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed_users.append(user_name)
             logger.debug(f"Ошибка отправки пользователю {uid}: {e}")
     
-    # Удаляем анимированное сообщение
     await loading_msg.delete()
     
-    # Формируем отчет о рассылке
     result_text = f"""✅ Рассылка завершена!
 
 📊 Статистика:
@@ -1594,7 +1435,6 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(failed_users) > 10:
             result_text += f"\n... и еще {len(failed_users) - 10} пользователей"
     
-    # Возвращаемся в главное меню
     user_states[user_id] = {'state': 'main'}
     
     await update.message.reply_text(
@@ -1612,7 +1452,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ У вас нет доступа к боту.")
         return
     
-    # Обновляем активность пользователя
     update_user_activity(user_id)
     
     state = user_states.get(user_id, {}).get('state', 'main')
@@ -1626,7 +1465,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_keyboard(permissions)
             )
         elif text in ['📨 Всем кто запускал бота', '📋 Всем из базы данных']:
-            # Проверяем есть ли пользователи для рассылки
             if '📨' in text and len(bot_users) == 0:
                 await update.message.reply_text(
                     "⚠️ Пока никто не запускал бота после последнего обновления.\n\n"
@@ -1662,23 +1500,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Обработка кнопки Назад
     if text == '⬅️ Назад':
-        if state in ['rosseti_kuban', 'rosseti_yug', 'reports', 'phones', 'settings', 'broadcast_message', 'broadcast_choice']:
+        if state in ['rosseti_kuban', 'rosseti_yug', 'reports', 'phones', 'settings', 'broadcast_message', 'broadcast_choice', 'admin']:
             user_states[user_id] = {'state': 'main'}
             await update.message.reply_text("Главное меню", reply_markup=get_main_keyboard(permissions))
         elif state == 'reference':
-            # Проверяем, откуда пришли в справку
             previous_state = user_states[user_id].get('previous_state')
             if previous_state and previous_state.startswith('branch_'):
-                # Возвращаемся в меню филиала
                 branch = user_states[user_id].get('branch')
                 user_states[user_id]['state'] = previous_state
                 await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
             else:
-                # Возвращаемся в главное меню
                 user_states[user_id] = {'state': 'main'}
                 await update.message.reply_text("Главное меню", reply_markup=get_main_keyboard(permissions))
         elif state == 'document_actions':
-            # Сохраняем previous_state при возврате в справку
             previous_state = user_states[user_id].get('previous_state')
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
@@ -1693,13 +1527,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id]['state'] = 'reports'
             await update.message.reply_text("Выберите тип отчета", reply_markup=get_reports_keyboard(permissions))
         elif state.startswith('branch_'):
-            # Проверяем права пользователя
             if permissions['branch'] != 'All':
-                # Если доступен только один филиал, возвращаемся в главное меню
                 user_states[user_id] = {'state': 'main'}
                 await update.message.reply_text("Главное меню", reply_markup=get_main_keyboard(permissions))
             else:
-                # Если доступны все филиалы, возвращаемся к выбору филиала
                 network = user_states[user_id].get('network')
                 if network == 'RK':
                     user_states[user_id] = {'state': 'rosseti_kuban', 'network': 'RK'}
@@ -1725,18 +1556,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=get_branch_keyboard(ROSSETI_KUBAN_BRANCHES)
                     )
                 else:
-                    # Если доступен только один филиал
-                    # Нормализуем название филиала к формату списка филиалов
                     user_branch = permissions['branch']
                     logger.info(f"Пользователь {user_id} имеет доступ только к филиалу: '{user_branch}'")
                     
-                    # Ищем соответствующий филиал в списке
                     normalized_branch = None
                     user_branch_clean = user_branch.replace(' ЭС', '').strip()
                     
                     for kb_branch in ROSSETI_KUBAN_BRANCHES:
                         kb_branch_clean = kb_branch.replace(' ЭС', '').strip()
-                        # Проверяем точное совпадение или начало
                         if (kb_branch_clean == user_branch_clean or 
                             kb_branch_clean.startswith(user_branch_clean) or
                             user_branch_clean.startswith(kb_branch_clean)):
@@ -1745,7 +1572,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     if not normalized_branch:
                         logger.warning(f"Не найдено соответствие для филиала '{user_branch}' в списке РОССЕТИ КУБАНЬ")
-                        normalized_branch = user_branch  # Используем как есть, если не нашли
+                        normalized_branch = user_branch
                     else:
                         logger.info(f"Филиал '{user_branch}' нормализован к '{normalized_branch}'")
                     
@@ -1764,18 +1591,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=get_branch_keyboard(ROSSETI_YUG_BRANCHES)
                     )
                 else:
-                    # Если доступен только один филиал
-                    # Нормализуем название филиала к формату списка филиалов
                     user_branch = permissions['branch']
                     logger.info(f"Пользователь {user_id} имеет доступ только к филиалу: '{user_branch}'")
                     
-                    # Ищем соответствующий филиал в списке
                     normalized_branch = None
                     user_branch_clean = user_branch.replace(' ЭС', '').strip()
                     
                     for ug_branch in ROSSETI_YUG_BRANCHES:
                         ug_branch_clean = ug_branch.replace(' ЭС', '').strip()
-                        # Проверяем точное совпадение или начало
                         if (ug_branch_clean == user_branch_clean or 
                             ug_branch_clean.startswith(user_branch_clean) or
                             user_branch_clean.startswith(ug_branch_clean)):
@@ -1784,7 +1607,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     if not normalized_branch:
                         logger.warning(f"Не найдено соответствие для филиала '{user_branch}' в списке РОССЕТИ ЮГ")
-                        normalized_branch = user_branch  # Используем как есть, если не нашли
+                        normalized_branch = user_branch
                     else:
                         logger.info(f"Филиал '{user_branch}' нормализован к '{normalized_branch}'")
                     
@@ -1818,49 +1641,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == '📞 ТЕЛЕФОНЫ КОНТРАГЕНТОВ':
             await update.message.reply_text("🚧 Раздел в разработке")
         
-        elif text == '📊 СТАТУС ПОЛЬЗОВАТЕЛЕЙ':
+        elif text == '🛠 АДМИНИСТРИРОВАНИЕ':
             if permissions.get('visibility') == 'All':
-                await generate_ping_report(update, context)
-            else:
-                await update.message.reply_text("❌ У вас нет доступа к этой функции")
-        
-        elif text == '🔄 УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ':
-            if permissions.get('visibility') == 'All':
-                # Проверяем что это не первый запуск бота
-                if len(bot_users) > 0:
-                    await notify_restart(update, context)
-                else:
-                    await update.message.reply_text(
-                        "⚠️ Это первый запуск бота после деплоя.\n"
-                        "Пока никто не активировал бота командой /start.\n\n"
-                        "Функция уведомления о перезапуске станет доступна после того, "
-                        "как хотя бы один пользователь запустит бота."
-                    )
-            else:
-                await update.message.reply_text("❌ У вас нет доступа к этой функции")
-        
-        elif text == '📢 МАССОВАЯ РАССЫЛКА':
-            if permissions.get('visibility') == 'All':
-                user_states[user_id] = {'state': 'broadcast_choice'}
-                keyboard = [
-                    ['📨 Всем кто запускал бота'],
-                    ['📋 Всем из базы данных'],
-                    ['❌ Отмена']
-                ]
+                user_states[user_id] = {'state': 'admin'}
                 await update.message.reply_text(
-                    "📢 Выберите кому отправить рассылку:\n\n"
-                    "📨 *Всем кто запускал бота* - отправка только тем, кто использовал /start после последнего обновления\n\n"
-                    "📋 *Всем из базы данных* - отправка всем пользователям из зон доступа",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-                    parse_mode='Markdown'
+                    "🛠 Меню администрирования\n\n"
+                    "Выберите действие:",
+                    reply_markup=get_admin_keyboard()
                 )
             else:
                 await update.message.reply_text("❌ У вас нет доступа к этой функции")
     
+    # Меню администрирования
+    elif state == 'admin':
+        if text == '📊 СТАТУС ПОЛЬЗОВАТЕЛЕЙ':
+            await generate_ping_report(update, context)
+            
+        elif text == '🔄 УВЕДОМИТЬ О ПЕРЕЗАПУСКЕ':
+            if len(bot_users) > 0:
+                await notify_restart(update, context)
+            else:
+                await update.message.reply_text(
+                    "⚠️ Это первый запуск бота после деплоя.\n"
+                    "Пока никто не активировал бота командой /start.\n\n"
+                    "Функция уведомления о перезапуске станет доступна после того, "
+                    "как хотя бы один пользователь запустит бота."
+                )
+                
+        elif text == '📢 МАССОВАЯ РАССЫЛКА':
+            user_states[user_id] = {'state': 'broadcast_choice'}
+            keyboard = [
+                ['📨 Всем кто запускал бота'],
+                ['📋 Всем из базы данных'],
+                ['❌ Отмена']
+            ]
+            await update.message.reply_text(
+                "📢 Выберите кому отправить рассылку:\n\n"
+                "📨 *Всем кто запускал бота* - отправка только тем, кто использовал /start после последнего обновления\n\n"
+                "📋 *Всем из базы данных* - отправка всем пользователям из зон доступа",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+                parse_mode='Markdown'
+            )
+    
     # Выбор филиала
     elif state in ['rosseti_kuban', 'rosseti_yug']:
         if text.startswith('⚡ '):
-            branch = text[2:]  # Убираем символ молнии
+            branch = text[2:]
             user_states[user_id]['state'] = f'branch_{branch}'
             user_states[user_id]['branch'] = branch
             await update.message.reply_text(
@@ -1889,7 +1715,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         elif text == 'ℹ️ Справка':
-            # Сохраняем текущее состояние и данные филиала
             current_data = user_states.get(user_id, {}).copy()
             user_states[user_id] = {
                 'state': 'reference',
@@ -1905,7 +1730,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Поиск ТП
     elif state == 'search_tp':
         if text == '🔍 Новый поиск':
-            # Остаемся в том же состоянии
             keyboard = [['⬅️ Назад']]
             await update.message.reply_text(
                 "🔍 Введите наименование ТП для поиска:",
@@ -1915,11 +1739,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
             
-            # Нормализуем название филиала
             branch = normalize_branch_name(branch)
             logger.info(f"Поиск ТП для филиала: {branch}, сеть: {network}")
             
-            # Показываем анимированное сообщение
             search_messages = [
                 "🔍 Ищу информацию...",
                 "📡 Подключаюсь к базе данных...",
@@ -1927,25 +1749,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🔄 Обрабатываю результаты..."
             ]
             
-            # Отправляем первое сообщение
             loading_msg = await update.message.reply_text(search_messages[0])
             
-            # Анимация поиска
             for i, msg_text in enumerate(search_messages[1:], 1):
-                await asyncio.sleep(0.5)  # Задержка между сообщениями
+                await asyncio.sleep(0.5)
                 try:
                     await loading_msg.edit_text(msg_text)
                 except Exception:
-                    pass  # Игнорируем ошибки редактирования
+                    pass
             
-            # Загружаем данные филиала
             env_key = get_env_key_for_branch(branch, network)
             csv_url = os.environ.get(env_key)
             
             logger.info(f"URL из переменной {env_key}: {csv_url}")
             
             if not csv_url:
-                # Показываем все доступные переменные окружения для отладки
                 available_vars = [key for key in os.environ.keys() if 'URL' in key and network in key]
                 logger.error(f"Доступные переменные для {network}: {available_vars}")
                 await loading_msg.delete()
@@ -1959,23 +1777,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data = load_csv_from_url(csv_url)
             results = search_tp_in_data(text, data, 'Наименование ТП')
             
-            # Удаляем анимированное сообщение
             await loading_msg.delete()
             
             if not results:
                 await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
                 return
             
-            # Группируем результаты по ТП
             tp_list = list(set([r['Наименование ТП'] for r in results]))
             
             if len(tp_list) == 1:
-                # Если найдена только одна ТП, сразу показываем результаты
                 await show_tp_results(update, results, tp_list[0])
             else:
-                # Показываем список найденных ТП
                 keyboard = []
-                for tp in tp_list[:10]:  # Ограничиваем 10 результатами
+                for tp in tp_list[:10]:
                     keyboard.append([tp])
                 keyboard.append(['⬅️ Назад'])
                 
@@ -1987,14 +1801,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                 )
         
-        # Выбор ТП из списка найденных
         elif user_states[user_id].get('action') == 'select_tp':
             results = user_states[user_id].get('search_results', [])
             filtered_results = [r for r in results if r['Наименование ТП'] == text]
             
             if filtered_results:
                 await show_tp_results(update, filtered_results, text)
-                # Возвращаем в состояние поиска
                 user_states[user_id]['action'] = 'search'
         
     # Уведомление - поиск ТП
@@ -2002,7 +1814,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         branch = user_states[user_id].get('branch')
         network = user_states[user_id].get('network')
         
-        # Показываем анимированное сообщение
         notification_messages = [
             "🔍 Поиск в справочнике...",
             "📋 Проверяю базу данных...",
@@ -2018,7 +1829,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
         
-        # Загружаем справочник
         env_key = get_env_key_for_branch(branch, network, is_reference=True)
         csv_url = os.environ.get(env_key)
         
@@ -2036,7 +1846,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
             return
         
-        # Группируем результаты по ТП
         tp_list = list(set([r['Наименование ТП'] for r in results]))
         
         keyboard = []
@@ -2058,11 +1867,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filtered_results = [r for r in results if r['Наименование ТП'] == text]
         
         if filtered_results:
-            # Сохраняем выбранную ТП
             user_states[user_id]['selected_tp'] = text
             user_states[user_id]['tp_data'] = filtered_results[0]
             
-            # Получаем список ВЛ для выбранной ТП
             vl_list = list(set([r['Наименование ВЛ'] for r in filtered_results]))
             
             keyboard = []
@@ -2094,7 +1901,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == 'send_notification':
         action = user_states[user_id].get('action')
         
-        # Пропуск фото и переход к комментарию
         if action == 'request_photo' and text == '⏭ Пропустить и добавить комментарий':
             user_states[user_id]['action'] = 'add_comment'
             keyboard = [
@@ -2106,15 +1912,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
         
-        # Отправка без фото и комментария
         elif action == 'request_photo' and text == '📤 Отправить без фото и комментария':
             await send_notification(update, context)
         
-        # Отправка без комментария (с фото или без)
         elif action == 'add_comment' and text == '📤 Отправить без комментария':
             await send_notification(update, context)
         
-        # Добавление комментария
         elif action == 'add_comment' and text not in ['⬅️ Назад', '📤 Отправить без комментария']:
             user_states[user_id]['comment'] = text
             await send_notification(update, context)
@@ -2123,7 +1926,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == 'settings':
         if text == '📖 Руководство пользователя':
             if USER_GUIDE_URL:
-                # Создаем красивое сообщение с кнопкой
                 keyboard = [[InlineKeyboardButton("📖 Открыть руководство", url=USER_GUIDE_URL)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
@@ -2174,7 +1976,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             
-            # Получаем информацию о документе
             doc_info = user_states[user_id].get('current_document')
             if not doc_info:
                 await update.message.reply_text(
@@ -2183,23 +1984,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             
-            # Показываем анимированное сообщение
             sending_msg = await update.message.reply_text("📧 Отправляю документ на почту...")
             
             try:
-                # Используем сохраненные данные документа
                 doc_data = doc_info.get('data')
                 if not doc_data:
-                    # Если данных нет, пробуем загрузить
                     document = await get_cached_document(doc_info['name'], doc_info['url'])
                     if document:
                         doc_data = document.getvalue()
                 
                 if doc_data:
-                    # Создаем BytesIO из данных
                     document_io = BytesIO(doc_data)
                     
-                    # Формируем письмо
                     subject = f"Документ: {doc_info['name']}"
                     body = f"""Добрый день, {user_data.get('name', 'Пользователь')}!
 
@@ -2210,7 +2006,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 С уважением,
 Бот ВОЛС Ассистент"""
                     
-                    # Отправляем email
                     success = await send_email(
                         user_email,
                         subject,
@@ -2245,7 +2040,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "❌ Ошибка при отправке документа",
                     reply_markup=get_document_action_keyboard()
                 )
-            return  # Важно: добавляем return чтобы не продолжать обработку
+            return
     
     # Действия с отчетами
     elif state == 'report_actions':
@@ -2261,7 +2056,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             
-            # Получаем информацию об отчете
             report_info = user_states[user_id].get('last_report')
             if not report_info:
                 await update.message.reply_text(
@@ -2270,14 +2064,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             
-            # Показываем анимированное сообщение
             sending_msg = await update.message.reply_text("📧 Отправляю отчет на почту...")
             
             try:
-                # Создаем BytesIO из данных отчета
                 report_data = BytesIO(report_info['data'])
                 
-                # Формируем письмо
                 subject = f"Отчет: {report_info['filename'].replace('.xlsx', '')}"
                 body = f"""Добрый день, {user_data.get('name', 'Пользователь')}!
 
@@ -2290,7 +2081,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 С уважением,
 Бот ВОЛС Ассистент"""
                 
-                # Отправляем email
                 success = await send_email(
                     user_email,
                     subject,
@@ -2319,7 +2109,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "❌ Ошибка при отправке отчета",
                     reply_markup=get_report_action_keyboard()
                 )
-            return  # Важно: добавляем return чтобы не продолжать обработку
+            return
     
     # Отчеты
     elif state == 'reports':
@@ -2335,10 +2125,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Справка
     elif state == 'reference':
         if text.startswith('📄 ') or text.startswith('📊 '):
-            # Убираем эмодзи и ищем соответствующий документ
             button_text = text[2:].strip()
             
-            # Маппинг сокращенных названий к полным
             doc_mapping = {
                 'План выручки ВОЛС 24-26': 'План по выручке ВОЛС на ВЛ 24-26 годы',
                 'Акт инвентаризации': 'Форма акта инвентаризации',
@@ -2348,12 +2136,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'Отчет по контрагентам': 'Отчет по контрагентам'
             }
             
-            # Ищем полное название
             doc_name = doc_mapping.get(button_text, button_text)
             
-            # Если не нашли в маппинге, ищем прямое совпадение
             if doc_name not in REFERENCE_DOCS:
-                # Ищем частичное совпадение
                 for full_name in REFERENCE_DOCS.keys():
                     if button_text in full_name or full_name in button_text:
                         doc_name = full_name
@@ -2362,34 +2147,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             doc_url = REFERENCE_DOCS.get(doc_name)
             
             if doc_url:
-                # Показываем сообщение о загрузке
                 loading_msg = await update.message.reply_text("⏳ Загружаю документ...")
                 
                 try:
-                    # Получаем документ из кэша или загружаем
                     document = await get_cached_document(doc_name, doc_url)
                     
                     if document:
-                        # Определяем расширение файла
                         if 'spreadsheet' in doc_url or 'xlsx' in doc_url:
                             extension = 'xlsx'
                         elif 'document' in doc_url or 'pdf' in doc_url:
                             extension = 'pdf'
                         else:
-                            extension = 'pdf'  # по умолчанию
+                            extension = 'pdf'
                         
                         filename = f"{doc_name}.{extension}"
                         
-                        # Отправляем документ
                         await update.message.reply_document(
                             document=InputFile(document, filename=filename),
                             caption=f"📄 {doc_name}"
                         )
                         
-                        # Удаляем сообщение о загрузке
                         await loading_msg.delete()
                         
-                        # Сохраняем информацию о документе в состоянии
                         previous_state = user_states[user_id].get('previous_state')
                         branch = user_states[user_id].get('branch')
                         network = user_states[user_id].get('network')
@@ -2402,10 +2181,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             'name': doc_name,
                             'url': doc_url,
                             'filename': filename,
-                            'data': document.getvalue()  # Сохраняем данные документа
+                            'data': document.getvalue()
                         }
                         
-                        # Показываем кнопки действий
                         await update.message.reply_text(
                             "Документ загружен",
                             reply_markup=get_document_action_keyboard()
@@ -2433,13 +2211,11 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
         await update.message.reply_text("❌ Результаты не найдены")
         return
         
-    # Получаем РЭС из первого результата
     res_name = results[0].get('РЭС', 'Неизвестный')
     
     message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
     
     for result in results:
-        # Обрабатываем каждый результат
         vl = result.get('Наименование ВЛ', '-')
         supports = result.get('Опоры', '-')
         supports_count = result.get('Количество опор', '-')
@@ -2449,7 +2225,6 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
         message += f"Опоры: {supports}, Количество опор: {supports_count}\n"
         message += f"Контрагент: {provider}\n\n"
     
-    # Отправляем сообщение по частям, если оно слишком длинное
     if len(message) > 4000:
         parts = []
         current_part = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
@@ -2473,7 +2248,6 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
     else:
         await update.message.reply_text(message)
     
-    # Показываем клавиатуру с кнопками после поиска
     await update.message.reply_text(
         "Выберите действие:",
         reply_markup=get_after_search_keyboard()
@@ -2490,13 +2264,11 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_tp = user_states[user_id].get('selected_tp')
         selected_vl = user_states[user_id].get('selected_vl')
         
-        # Сохраняем локацию
         user_states[user_id]['location'] = {
             'latitude': location.latitude,
             'longitude': location.longitude
         }
         
-        # Переходим к запросу фото
         user_states[user_id]['action'] = 'request_photo'
         
         keyboard = [
@@ -2505,7 +2277,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ['⬅️ Назад']
         ]
         
-        # Отправляем анимированную подсказку
         photo_tips = [
             "📸 Подготовьте камеру...",
             "📷 Сфотографируйте бездоговорной ВОЛС...",
@@ -2524,7 +2295,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1.5)
         await tip_msg.delete()
         
-        # Отправляем основное сообщение
         await update.message.reply_text(
             "📸 Сделайте фото бездоговорного ВОЛС\n\n"
             "Как отправить фото:\n"
@@ -2540,8 +2310,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id, {}).get('state')
     
     if state == 'send_notification' and user_states[user_id].get('action') == 'request_photo':
-        # Сохраняем фото
-        photo = update.message.photo[-1]  # Берем фото в максимальном качестве
+        photo = update.message.photo[-1]
         file_id = photo.file_id
         
         user_states[user_id]['photo_id'] = file_id
@@ -2562,7 +2331,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
     logger.error(f"Exception while handling an update: {context.error}")
     
-    # Попытаемся уведомить пользователя об ошибке
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text(
@@ -2603,8 +2371,7 @@ async def reload_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для принудительной перезагрузки данных пользователей"""
     user_id = str(update.effective_user.id)
     
-    # Проверяем, что это администратор (можно добавить список админов)
-    admin_ids = ['248207151', '1409325335']  # Добавь свои ID админов
+    admin_ids = ['248207151', '1409325335']
     
     if user_id not in admin_ids:
         await update.message.reply_text("❌ У вас нет прав для выполнения этой команды")
@@ -2613,12 +2380,10 @@ async def reload_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loading_msg = await update.message.reply_text("🔄 Перезагружаю данные пользователей...")
     
     try:
-        # Очищаем кэш
         global users_cache, users_cache_backup
         old_count = len(users_cache)
         users_cache = {}
         
-        # Загружаем заново
         load_users_data()
         
         new_count = len(users_cache)
@@ -2643,7 +2408,6 @@ async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = context.args[0]
     
     try:
-        # Пытаемся получить информацию о чате
         chat = await context.bot.get_chat(chat_id=target_id)
         await update.message.reply_text(
             f"✅ Пользователь доступен\n"
@@ -2679,7 +2443,7 @@ async def preload_documents():
 async def refresh_users_data():
     """Периодическое обновление данных пользователей"""
     while True:
-        await asyncio.sleep(300)  # Обновляем каждые 5 минут
+        await asyncio.sleep(300)
         logger.info("Обновляем данные пользователей...")
         try:
             load_users_data()
@@ -2690,32 +2454,29 @@ async def refresh_users_data():
 async def save_bot_users_periodically():
     """Периодическое сохранение данных о пользователях бота"""
     while True:
-        await asyncio.sleep(600)  # Сохраняем каждые 10 минут
+        await asyncio.sleep(600)
         save_bot_users()
         logger.info("Автосохранение данных пользователей бота")
 
 async def refresh_documents_cache():
     """Периодическое обновление кэша документов"""
     while True:
-        await asyncio.sleep(3600)  # Ждем час
+        await asyncio.sleep(3600)
         logger.info("Обновляем кэш документов...")
         
         for doc_name in list(documents_cache.keys()):
             doc_url = REFERENCE_DOCS.get(doc_name)
             if doc_url:
                 try:
-                    # Очищаем старый кэш
                     del documents_cache[doc_name]
                     del documents_cache_time[doc_name]
                     
-                    # Загружаем заново
                     await get_cached_document(doc_name, doc_url)
                     logger.info(f"✅ Обновлен кэш для {doc_name}")
                 except Exception as e:
                     logger.error(f"❌ Ошибка обновления кэша {doc_name}: {e}")
 
 if __name__ == '__main__':
-    # Регистрируем обработчик сигналов
     def signal_handler(sig, frame):
         logger.info("Получен сигнал остановки, сохраняем данные...")
         save_bot_users()
@@ -2724,7 +2485,6 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Проверяем обязательные переменные окружения
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не задан в переменных окружения!")
         exit(1)
@@ -2733,10 +2493,8 @@ if __name__ == '__main__':
         logger.error("ZONES_CSV_URL не задан в переменных окружения!")
         exit(1)
     
-    # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("reload", reload_users))
@@ -2746,40 +2504,31 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_error_handler(error_handler)
     
-    # Загружаем данные пользователей
     load_users_data()
     
-    # Загружаем данные о пользователях бота
     load_bot_users()
     
-    # Создаем корутину для инициализации
     async def init_and_start():
         """Инициализация и запуск"""
-        # Предзагружаем документы
         await preload_documents()
         
-        # Запускаем фоновые задачи
         asyncio.create_task(refresh_documents_cache())
         asyncio.create_task(refresh_users_data())
         asyncio.create_task(save_bot_users_periodically())
     
-    # Добавляем обработчик для инициализации при старте
     async def post_init(application: Application) -> None:
         """Вызывается после инициализации приложения"""
         await init_and_start()
     
-    # Добавляем обработчик для сохранения данных при остановке
     async def post_shutdown(application: Application) -> None:
         """Вызывается при остановке приложения"""
         logger.info("Сохраняем данные перед остановкой...")
         save_bot_users()
     
-    # Устанавливаем callbacks
     application.post_init = post_init
     if hasattr(application, 'post_shutdown'):
         application.post_shutdown = post_shutdown
     
-    # Запускаем webhook
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
