@@ -1432,7 +1432,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id, {}).get('state', 'main')
     
     # Обработка массовой рассылки
-    elif state == 'broadcast_message':
+    if state == 'broadcast_message':
         await handle_broadcast(update, context)
         return
     
