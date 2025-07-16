@@ -671,8 +671,7 @@ async def send_email(to_email: str, subject: str, body: str, attachment_data: By
     except Exception as e:
         logger.error(f"Ошибка отправки email на {to_email}: {e}")
         return False
-
-# ========== ОБРАБОТЧИКИ ==========
+        # ========== ОБРАБОТЧИКИ ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
@@ -937,7 +936,48 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - РЭС из справочника: "{res_from_reference}"
 - Всего пользователей в базе: {len(users_cache)}"""
     
-    user_states[user_id] = {'state': f'branch_{branch}', 'branch': branch, 'network': network}
+    # Очищаем временные данные уведомления
+    user_states[user_id]['location'] = None
+    user_states[user_id]['photo_id'] = None
+    user_states[user_id]['comment'] = ''
+    
+    # Если пришли из поиска - возвращаемся к выбору ВЛ
+    if 'last_search_tp' in user_states[user_id]:
+        user_states[user_id]['state'] = 'send_notification'
+        user_states[user_id]['action'] = 'select_vl'
+        
+        # Перезагружаем данные из справочника для получения списка ВЛ
+        env_key = get_env_key_for_branch(branch, network, is_reference=True)
+        csv_url = os.environ.get(env_key)
+        
+        if csv_url:
+            data = load_csv_from_url(csv_url)
+            results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+            
+            # Фильтруем по РЭС если нужно
+            user_permissions = get_user_permissions(user_id)
+            user_res = user_permissions.get('res')
+            if user_res and user_res != 'All':
+                results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+            
+            if results:
+                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                keyboard = []
+                for vl in vl_list:
+                    keyboard.append([vl])
+                keyboard.append(['🔍 Новый поиск'])
+                keyboard.append(['⬅️ Назад'])
+                
+                await update.message.reply_text(
+                    result_text + f"\n\n✨ Можете отправить еще уведомление по этой же ТП:\n📍 ТП: {selected_tp}\n\nВыберите ВЛ:",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+                return
+    
+    # Иначе - стандартное поведение (возврат в меню филиала)
+    user_states[user_id]['state'] = f'branch_{branch}'
+    user_states[user_id]['branch'] = branch
+    user_states[user_id]['network'] = network
     
     await update.message.reply_text(
         result_text,
@@ -1484,6 +1524,7 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard(get_user_permissions(user_id))
     )
 
+# Продолжение следует в части 3...
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
     user_id = str(update.effective_user.id)
@@ -1653,6 +1694,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     keyboard = []
                                     for vl in vl_list:
                                         keyboard.append([vl])
+                                    keyboard.append(['🔍 Новый поиск'])
                                     keyboard.append(['⬅️ Назад'])
                                     
                                     await update.message.reply_text(
@@ -1962,6 +2004,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard = []
                 for vl in vl_list:
                     keyboard.append([vl])
+                keyboard.append(['🔍 Новый поиск'])
                 keyboard.append(['⬅️ Назад'])
                 
                 await update.message.reply_text(
@@ -2196,6 +2239,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = []
             for vl in vl_list:
                 keyboard.append([vl])
+            keyboard.append(['🔍 Новый поиск'])
             keyboard.append(['⬅️ Назад'])
             
             user_states[user_id]['action'] = 'select_vl'
@@ -2208,6 +2252,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Выбор ВЛ
     elif state == 'send_notification' and user_states[user_id].get('action') == 'select_vl':
+        # Обработка кнопки "🔍 Новый поиск"
+        if text == '🔍 Новый поиск':
+            user_states[user_id]['state'] = 'search_tp'
+            user_states[user_id]['action'] = 'search'
+            # Очищаем данные предыдущего поиска
+            if 'last_search_tp' in user_states[user_id]:
+                del user_states[user_id]['last_search_tp']
+            keyboard = [['⬅️ Назад']]
+            await update.message.reply_text(
+                "🔍 Введите наименование ТП для поиска:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
+            return
+            
         user_states[user_id]['selected_vl'] = text
         user_states[user_id]['action'] = 'send_location'
         
