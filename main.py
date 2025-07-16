@@ -592,7 +592,9 @@ def get_after_search_keyboard(tp_name: str = None) -> ReplyKeyboardMarkup:
     ]
     
     if tp_name:
-        keyboard.append([f'📨 Отправить уведомление по {tp_name}'])
+        # Обрезаем название ТП если слишком длинное для кнопки
+        display_tp = tp_name[:25] + '...' if len(tp_name) > 25 else tp_name
+        keyboard.append([f'📨 Отправить уведомление по {display_tp}'])
     else:
         keyboard.append(['📨 Отправить уведомление'])
     
@@ -1495,6 +1497,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_user_activity(user_id)
     
     state = user_states.get(user_id, {}).get('state', 'main')
+    action = user_states.get(user_id, {}).get('action')
+    
+    # Отладка для админа
+    if user_id == '248207151':
+        logger.info(f"[DEBUG] User {user_id}: state='{state}', action='{action}', text='{text}'")
     
     # Выбор типа рассылки
     if state == 'broadcast_choice':
@@ -1581,8 +1588,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Выберите филиал", reply_markup=get_branch_keyboard(branches))
         elif state in ['search_tp', 'send_notification']:
             branch = user_states[user_id].get('branch')
-            # Проверяем, откуда пришли в отправку уведомления
-            if state == 'send_notification':
+            action = user_states[user_id].get('action')
+            
+            # Для search_tp с action 'after_results' (после показа результатов)
+            if state == 'search_tp' and action == 'after_results':
+                user_states[user_id]['state'] = f'branch_{branch}'
+                user_states[user_id]['action'] = None
+                await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
+                return
+            
+            # Для search_tp с action 'search' (в процессе поиска)
+            elif state == 'search_tp' and action == 'search':
+                user_states[user_id]['state'] = f'branch_{branch}'
+                user_states[user_id]['action'] = None
+                await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
+                return
+            
+            # Для send_notification применяем существующую логику
+            elif state == 'send_notification':
                 action = user_states[user_id].get('action')
                 
                 # Если мы в процессе отправки уведомления, пришедшего из поиска
@@ -1682,10 +1705,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Если пришли не из поиска - возвращаемся в меню филиала
                     user_states[user_id]['state'] = f'branch_{branch}'
                     await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
-            else:
-                # Для search_tp возвращаемся в меню филиала
-                user_states[user_id]['state'] = f'branch_{branch}'
-                await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
         return
     
     # Главное меню
@@ -1873,17 +1892,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Поиск ТП
     elif state == 'search_tp':
         if text == '🔍 Новый поиск':
+            user_states[user_id]['action'] = 'search'
             keyboard = [['⬅️ Назад']]
             await update.message.reply_text(
                 "🔍 Введите наименование ТП для поиска:",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
-        elif text == '📨 Отправить уведомление':
+        elif text.startswith('📨 Отправить уведомление'):
+            logger.info(f"Обработка кнопки отправки уведомления: '{text}'")
             # Переход к отправке уведомления с уже найденной ТП
             if 'last_search_tp' in user_states[user_id]:
                 selected_tp = user_states[user_id]['last_search_tp']
                 branch = user_states[user_id].get('branch')
                 network = user_states[user_id].get('network')
+                
+                logger.info(f"Найдена сохраненная ТП: {selected_tp}")
+                logger.info(f"Branch: {branch}, Network: {network}")
                 
                 # Проверяем права пользователя - может у него указан конкретный филиал
                 user_permissions = get_user_permissions(user_id)
@@ -2523,6 +2547,7 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
     # Сохраняем найденную ТП для возможности отправки уведомления
     user_id = str(update.effective_user.id)
     user_states[user_id]['last_search_tp'] = tp_name
+    user_states[user_id]['action'] = 'after_results'  # ИСПРАВЛЕНО: Устанавливаем правильный action
     logger.info(f"[show_tp_results] Сохранена ТП для отправки уведомления: {tp_name}")
     logger.info(f"[show_tp_results] Текущий state: {user_states[user_id].get('state')}")
     logger.info(f"[show_tp_results] Текущий action: {user_states[user_id].get('action')}")
