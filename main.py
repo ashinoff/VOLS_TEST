@@ -2043,6 +2043,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(tp_list) == 1:
                 # Если найдена только одна ТП, сразу показываем результаты
                 await show_tp_results(update, results, tp_list[0])
+                # Устанавливаем action для корректной работы кнопок
+                user_states[user_id]['action'] = 'after_results'
             else:
                 # Показываем список найденных ТП
                 keyboard = []
@@ -2521,7 +2523,9 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
     # Сохраняем найденную ТП для возможности отправки уведомления
     user_id = str(update.effective_user.id)
     user_states[user_id]['last_search_tp'] = tp_name
-    logger.info(f"Сохранена ТП для отправки уведомления: {tp_name}")
+    logger.info(f"[show_tp_results] Сохранена ТП для отправки уведомления: {tp_name}")
+    logger.info(f"[show_tp_results] Текущий state: {user_states[user_id].get('state')}")
+    logger.info(f"[show_tp_results] Текущий action: {user_states[user_id].get('action')}")
     
     res_name = results[0].get('РЭС', 'Неизвестный')
     
