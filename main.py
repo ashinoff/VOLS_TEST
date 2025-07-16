@@ -2769,6 +2769,11 @@ async def refresh_documents_cache():
 
 if __name__ == '__main__':
     # Регистрируем обработчик сигналов
+    def signal_handler(sig, frame):
+        logger.info("Получен сигнал остановки, сохраняем данные...")
+        save_bot_users()
+        sys.exit(0)
+    
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
@@ -2835,10 +2840,3 @@ if __name__ == '__main__':
         webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
         drop_pending_updates=True
     )
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не задан в переменных окружения!")
-        exit(1)
-        
-    if not ZONES_CSV_URL:
-        logger.error("ZONES_CSV_URL не задан в переменных окружения!")
-        exit(1)
