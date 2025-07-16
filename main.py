@@ -585,13 +585,19 @@ def get_document_action_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def get_after_search_keyboard() -> ReplyKeyboardMarkup:
+def get_after_search_keyboard(tp_name: str = None) -> ReplyKeyboardMarkup:
     """Клавиатура после результатов поиска"""
     keyboard = [
-        ['📨 Отправить уведомление'],
-        ['🔍 Новый поиск'],
-        ['⬅️ Назад']
+        ['🔍 Новый поиск']
     ]
+    
+    if tp_name:
+        keyboard.append([f'📨 Отправить уведомление по {tp_name}'])
+    else:
+        keyboard.append(['📨 Отправить уведомление'])
+    
+    keyboard.append(['⬅️ Назад'])
+    
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_report_action_keyboard() -> ReplyKeyboardMarkup:
@@ -1568,9 +1574,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Если пришли из поиска - возвращаемся к результатам поиска
                 user_states[user_id]['state'] = 'search_tp'
                 user_states[user_id]['action'] = 'after_results'  # Специальное состояние после результатов
+                tp_name = user_states[user_id].get('last_search_tp', '')
                 await update.message.reply_text(
                     "Вернулись к результатам поиска",
-                    reply_markup=get_after_search_keyboard()
+                    reply_markup=get_after_search_keyboard(tp_name)
                 )
             else:
                 # Иначе возвращаемся в меню филиала
@@ -1919,21 +1926,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             tp_list = list(set([r['Наименование ТП'] for r in results]))
             
-            if len(tp_list) == 1:
-                await show_tp_results(update, results, tp_list[0])
-            else:
-                keyboard = []
-                for tp in tp_list[:10]:
-                    keyboard.append([tp])
-                keyboard.append(['⬅️ Назад'])
-                
-                user_states[user_id]['search_results'] = results
-                user_states[user_id]['action'] = 'select_tp'
-                
-                await update.message.reply_text(
-                    f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                )
+                if len(tp_list) == 1:
+                    # Если найдена только одна ТП, сразу показываем результаты
+                    await show_tp_results(update, results, tp_list[0])
+                else:
+                    # Показываем список найденных ТП
+                    keyboard = []
+                    for tp in tp_list[:10]:
+                        keyboard.append([tp])
+                    keyboard.append(['⬅️ Назад'])
+                    
+                    user_states[user_id]['search_results'] = results
+                    user_states[user_id]['action'] = 'select_tp'
+                    
+                    await update.message.reply_text(
+                        f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
+                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    )
         
         elif user_states[user_id].get('action') == 'select_tp':
             results = user_states[user_id].get('search_results', [])
@@ -2428,7 +2437,7 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
     
     await update.message.reply_text(
         "Выберите действие:",
-        reply_markup=get_after_search_keyboard()
+        reply_markup=get_after_search_keyboard(tp_name)
     )
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
