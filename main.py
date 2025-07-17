@@ -220,7 +220,9 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     
     translit_map = {
         'Юго-Западные': 'YUGO_ZAPADNYE',
+        'Юго-Западный': 'YUGO_ZAPADNYE',
         'Усть-Лабинские': 'UST_LABINSKIE', 
+        'Усть-Лабинский': 'UST_LABINSKIE',
         'Тимашевские': 'TIMASHEVSKIE',
         'Тимашевский': 'TIMASHEVSKIE',
         'Тихорецкие': 'TIKHORETSKIE',
