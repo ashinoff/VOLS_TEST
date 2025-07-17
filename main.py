@@ -1,6 +1,6 @@
 """
 ВОЛС Ассистент - Telegram бот для управления уведомлениями о бездоговорных ВОЛС
-Версия: 2.1.0
+Версия: 2.1.0 OPTIMIZED
 """
 
 BOT_VERSION = "2.1.0"
@@ -16,6 +16,7 @@ import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import requests
+import requests.adapters
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import pandas as pd
@@ -60,6 +61,26 @@ ROSSETI_YUG_BRANCHES = [
     "Южные ЭС", "Северо-Восточные ЭС", "Юго-Восточные ЭС", "Северные ЭС"
 ]
 
+# ==================== КЭШИРОВАНИЕ ====================
+# Кэш для CSV файлов
+csv_cache = {}
+csv_cache_time = {}
+CSV_CACHE_DURATION = timedelta(hours=2)  # Кэш на 2 часа
+
+# Индексы для быстрого поиска
+csv_index_cache = {}
+
+# Пул соединений для requests (для загрузки пользователей)
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=10,
+    pool_maxsize=20,
+    max_retries=3
+)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
+
+# ==================== СУЩЕСТВУЮЩИЕ ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
 # Хранилище уведомлений
 notifications_storage = {
     'RK': [],
@@ -100,6 +121,226 @@ REFERENCE_DOCS = {
 USER_GUIDE_URL = os.environ.get('USER_GUIDE_URL', 'https://your-domain.com/vols-guide')
 
 BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
+
+# ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ====================
+
+def normalize_tp_name_advanced(name: str) -> str:
+    """Улучшенная нормализация имени ТП для поиска"""
+    if not name:
+        return ""
+    
+    # Приводим к верхнему регистру
+    name = name.upper()
+    
+    # Оставляем буквы, цифры, дефисы и пробелы
+    name = re.sub(r'[^\w\s\-А-Яа-я]', '', name, flags=re.UNICODE)
+    
+    # Убираем лишние пробелы
+    name = ' '.join(name.split())
+    
+    return name
+
+def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> List[Dict]:
+    """Улучшенный поиск ТП с поддержкой различных паттернов"""
+    if not tp_query or not data:
+        return []
+    
+    # Нормализуем запрос
+    normalized_query = normalize_tp_name_advanced(tp_query)
+    
+    # Паттерн для поиска вида "буквы-цифры-буквы-цифры" (например ВЛ-10-АД-2)
+    pattern_match = re.match(r'([А-ЯA-Z]+)-?(\d+)-?([А-ЯA-Z]+)?-?(\d+)?', normalized_query)
+    
+    results = []
+    seen_tp = set()  # Для исключения дубликатов
+    
+    for row in data:
+        tp_name = row.get(column, '')
+        if not tp_name or tp_name in seen_tp:
+            continue
+            
+        normalized_tp = normalize_tp_name_advanced(tp_name)
+        
+        # 1. Точное совпадение
+        if normalized_query == normalized_tp:
+            results.append(row)
+            seen_tp.add(tp_name)
+            continue
+        
+        # 2. Частичное совпадение
+        if normalized_query in normalized_tp:
+            results.append(row)
+            seen_tp.add(tp_name)
+            continue
+        
+        # 3. Поиск по паттерну (для ВЛ-10-АД-2 и подобных)
+        if pattern_match:
+            # Извлекаем части из запроса
+            query_parts = [p for p in pattern_match.groups() if p]
+            
+            # Ищем эти части в названии ТП
+            tp_pattern = re.findall(r'([А-ЯA-Z]+)-?(\d+)-?([А-ЯA-Z]+)?-?(\d+)?', normalized_tp)
+            
+            for tp_match in tp_pattern:
+                tp_parts = [p for p in tp_match if p]
+                
+                # Сравниваем части
+                if len(query_parts) <= len(tp_parts):
+                    # Проверяем совпадение всех частей запроса
+                    match = True
+                    for i, query_part in enumerate(query_parts):
+                        if i < len(tp_parts) and query_part.upper() != tp_parts[i].upper():
+                            match = False
+                            break
+                    
+                    if match:
+                        results.append(row)
+                        seen_tp.add(tp_name)
+                        break
+        
+        # 4. Поиск только по цифрам (старый метод для совместимости)
+        query_digits = ''.join(filter(str.isdigit, normalized_query))
+        tp_digits = ''.join(filter(str.isdigit, normalized_tp))
+        
+        if query_digits and query_digits in tp_digits:
+            results.append(row)
+            seen_tp.add(tp_name)
+    
+    return results
+
+# Оставляем старую функцию для совместимости
+def normalize_tp_name(name: str) -> str:
+    """Нормализовать название ТП для поиска (старая версия)"""
+    return ''.join(filter(str.isdigit, name))
+
+def search_tp_in_data(tp_query: str, data: List[Dict], column: str) -> List[Dict]:
+    """Поиск ТП в данных (использует улучшенную версию)"""
+    return search_tp_in_data_advanced(tp_query, data, column)
+
+# ==================== АСИНХРОННАЯ ЗАГРУЗКА CSV ====================
+
+async def load_csv_from_url_async(url: str) -> List[Dict]:
+    """Асинхронная загрузка CSV с кэшированием"""
+    # Проверяем кэш
+    if url in csv_cache:
+        cache_time = csv_cache_time.get(url)
+        if cache_time and (datetime.now() - cache_time) < CSV_CACHE_DURATION:
+            logger.info(f"✅ Используем кэш для {url} ({len(csv_cache[url])} строк)")
+            return csv_cache[url]
+    
+    try:
+        logger.info(f"📥 Загружаем CSV из {url}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                response.raise_for_status()
+                text = await response.text()
+                
+                # Обрабатываем CSV
+                csv_file = io.StringIO(text)
+                reader = csv.DictReader(csv_file)
+                
+                data = []
+                for row in reader:
+                    normalized_row = {key.strip(): value.strip() if value else '' for key, value in row.items()}
+                    data.append(normalized_row)
+                
+                # Сохраняем в кэш
+                csv_cache[url] = data
+                csv_cache_time[url] = datetime.now()
+                
+                logger.info(f"✅ Загружено и закэшировано {len(data)} строк")
+                return data
+                
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ Таймаут при загрузке CSV из {url}")
+        # Если есть старый кэш - используем его
+        if url in csv_cache:
+            logger.warning("⚠️ Используем устаревший кэш из-за таймаута")
+            return csv_cache[url]
+        return []
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки CSV: {e}")
+        if url in csv_cache:
+            return csv_cache[url]
+        return []
+
+# Синхронная версия для обратной совместимости (использует кэш если есть)
+def load_csv_from_url(url: str) -> List[Dict]:
+    """Загрузить CSV файл по URL (проверяет кэш)"""
+    # Сначала проверяем кэш
+    if url in csv_cache:
+        cache_time = csv_cache_time.get(url)
+        if cache_time and (datetime.now() - cache_time) < CSV_CACHE_DURATION:
+            logger.info(f"✅ Используем кэш для {url} ({len(csv_cache[url])} строк)")
+            return csv_cache[url]
+    
+    # Если кэша нет - загружаем синхронно
+    try:
+        logger.info(f"Загружаем CSV из {url}")
+        response = session.get(url, timeout=30)  # Используем session с пулом
+        response.raise_for_status()
+        response.encoding = 'utf-8-sig'
+        
+        csv_file = io.StringIO(response.text)
+        reader = csv.DictReader(csv_file)
+        
+        data = []
+        for row in reader:
+            normalized_row = {key.strip(): value.strip() if value else '' for key, value in row.items()}
+            data.append(normalized_row)
+        
+        # Сохраняем в кэш
+        csv_cache[url] = data
+        csv_cache_time[url] = datetime.now()
+        
+        logger.info(f"Успешно загружено {len(data)} строк из CSV")
+        return data
+    except requests.exceptions.Timeout:
+        logger.error(f"Таймаут при загрузке CSV из {url}")
+        if url in csv_cache:
+            return csv_cache[url]
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка загрузки CSV: {e}", exc_info=True)
+        if url in csv_cache:
+            return csv_cache[url]
+        return []
+
+# ==================== ПРЕДЗАГРУЗКА CSV ====================
+
+async def preload_csv_files():
+    """Предзагрузка всех CSV файлов филиалов при старте"""
+    logger.info("🚀 Начинаем предзагрузку CSV файлов...")
+    
+    tasks = []
+    csv_urls = []
+    
+    # Собираем все URL из переменных окружения
+    for key, value in os.environ.items():
+        if 'URL' in key and value and value.startswith('http') and 'csv' in value.lower():
+            # Исключаем ZONES_CSV_URL так как он загружается отдельно
+            if key != 'ZONES_CSV_URL':
+                csv_urls.append(value)
+                tasks.append(load_csv_from_url_async(value))
+    
+    # Загружаем параллельно
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        success_count = sum(1 for r in results if not isinstance(r, Exception) and r)
+        logger.info(f"✅ Предзагружено {success_count}/{len(tasks)} CSV файлов")
+        
+        # Логируем ошибки
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"❌ Ошибка загрузки {csv_urls[i]}: {result}")
+
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
+def get_moscow_time():
+    """Получить текущее время в Москве"""
+    return datetime.now(MOSCOW_TZ)
 
 def save_bot_users():
     """Сохранить данные о пользователях бота в файл"""
@@ -155,15 +396,18 @@ def load_bot_users():
         logger.error(f"Ошибка загрузки данных пользователей бота: {e}")
         bot_users = {}
 
-def get_moscow_time():
-    """Получить текущее время в Москве"""
-    return datetime.now(MOSCOW_TZ)
+def update_user_activity(user_id: str):
+    """Обновить активность пользователя"""
+    if user_id not in user_activity:
+        user_activity[user_id] = {'last_activity': get_moscow_time(), 'count': 0}
+    user_activity[user_id]['last_activity'] = get_moscow_time()
+    # ==================== РАБОТА С ДОКУМЕНТАМИ ====================
 
 async def download_document(url: str) -> Optional[BytesIO]:
-    """Скачать документ по URL"""
+    """Скачать документ по URL (асинхронно)"""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 if response.status == 200:
                     content = await response.read()
                     return BytesIO(content)
@@ -175,6 +419,7 @@ async def get_cached_document(doc_name: str, doc_url: str) -> Optional[BytesIO]:
     """Получить документ из кэша или загрузить"""
     now = datetime.now()
     
+    # Проверяем кэш
     if doc_name in documents_cache:
         cache_time = documents_cache_time.get(doc_name)
         if cache_time and (now - cache_time) < timedelta(hours=1):
@@ -184,6 +429,7 @@ async def get_cached_document(doc_name: str, doc_url: str) -> Optional[BytesIO]:
     
     logger.info(f"Загружаем документ {doc_name} из {doc_url}")
     
+    # Формируем правильный URL для скачивания
     if 'docs.google.com/document' in doc_url and '/d/' in doc_url:
         doc_id = doc_url.split('/d/')[1].split('/')[0]
         download_url = f"https://docs.google.com/document/d/{doc_id}/export?format=pdf"
@@ -205,6 +451,137 @@ async def get_cached_document(doc_name: str, doc_url: str) -> Optional[BytesIO]:
         document.seek(0)
         
     return document
+
+# ==================== ЗАГРУЗКА ДАННЫХ ПОЛЬЗОВАТЕЛЕЙ ====================
+
+def load_users_data():
+    """Загрузить данные пользователей из CSV (оставляем синхронной как в оригинале)"""
+    global users_cache, users_cache_backup
+    try:
+        if not ZONES_CSV_URL:
+            logger.error("ZONES_CSV_URL не задан в переменных окружения!")
+            return
+            
+        logger.info(f"Начинаем загрузку данных из {ZONES_CSV_URL}")
+        data = load_csv_from_url(ZONES_CSV_URL)  # Использует кэш автоматически
+        
+        if not data:
+            logger.error("Получен пустой список данных из CSV")
+            if users_cache_backup:
+                logger.warning("Используем резервную копию данных пользователей")
+                users_cache = users_cache_backup.copy()
+            return
+            
+        if users_cache:
+            users_cache_backup = users_cache.copy()
+            
+        users_cache = {}
+        
+        if data:
+            logger.info(f"Структура CSV (первая строка): {list(data[0].keys())}")
+        
+        for row in data:
+            telegram_id = row.get('Telegram ID', '').strip()
+            if telegram_id:
+                name_parts = []
+                fio = row.get('ФИО', '').strip()
+                
+                if 'Фамилия' in row:
+                    surname = row.get('Фамилия', '').strip()
+                else:
+                    surname = ''
+                    if telegram_id in ['248207151', '1409325335']:
+                        logger.warning("Колонка 'Фамилия' отсутствует в CSV файле")
+                
+                if fio:
+                    name_parts.append(fio)
+                if surname:
+                    name_parts.append(surname)
+                
+                full_name = ' '.join(name_parts) if name_parts else 'Неизвестный'
+                
+                users_cache[telegram_id] = {
+                    'visibility': row.get('Видимость', '').strip(),
+                    'branch': row.get('Филиал', '').strip(),
+                    'res': row.get('РЭС', '').strip(),
+                    'name': full_name,
+                    'name_without_surname': fio if fio else 'Неизвестный',
+                    'responsible': row.get('Ответственный', '').strip(),
+                    'email': row.get('Email', '').strip()
+                }
+        
+        if users_cache:
+            users_cache_backup = users_cache.copy()
+            
+        logger.info(f"Загружено {len(users_cache)} пользователей")
+        
+        if users_cache:
+            sample_users = list(users_cache.items())[:3]
+            for uid, udata in sample_users:
+                logger.info(f"Пример пользователя: ID={uid}, visibility={udata.get('visibility')}, name={udata.get('name')}")
+                
+    except Exception as e:
+        logger.error(f"Ошибка загрузки данных пользователей: {e}", exc_info=True)
+        if users_cache_backup:
+            logger.warning("Восстанавливаем данные из резервной копии после ошибки")
+            users_cache = users_cache_backup.copy()
+
+def get_user_permissions(user_id: str) -> Dict:
+    """Получить права пользователя"""
+    if not users_cache:
+        logger.warning(f"users_cache пустой при запросе прав для пользователя {user_id}, пытаемся загрузить")
+        load_users_data()
+    
+    user_data = users_cache.get(str(user_id), {
+        'visibility': None,
+        'branch': None,
+        'res': None,
+        'name': 'Неизвестный',
+        'name_without_surname': 'Неизвестный',
+        'responsible': None
+    })
+    
+    logger.info(f"Права пользователя {user_id}: visibility={user_data.get('visibility')}, branch={user_data.get('branch')}")
+    
+    return user_data
+
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ФИЛИАЛОВ ====================
+
+def normalize_branch_name(branch_name: str) -> str:
+    """Нормализует название филиала к стандартному формату"""
+    # Если уже нормализовано (из списка филиалов) - возвращаем как есть
+    if branch_name in ROSSETI_KUBAN_BRANCHES or branch_name in ROSSETI_YUG_BRANCHES:
+        return branch_name
+    
+    singular_to_plural = {
+        'Тимашевский': 'Тимашевские',
+        'Тихорецкий': 'Тихорецкие',
+        'Сочинский': 'Сочинские',
+        'Славянский': 'Славянские',
+        'Ленинградский': 'Ленинградские',
+        'Лабинский': 'Лабинские',
+        'Краснодарский': 'Краснодарские',
+        'Армавирский': 'Армавирские',
+        'Адыгейский': 'Адыгейские',
+        'Центральный': 'Центральные',
+        'Западный': 'Западные',
+        'Восточный': 'Восточные',
+        'Южный': 'Южные',
+        'Северо-Восточный': 'Северо-Восточные',
+        'Юго-Восточный': 'Юго-Восточные',
+        'Северный': 'Северные',
+        'Юго-Западный': 'Юго-Западные',
+        'Усть-Лабинский': 'Усть-Лабинские',
+        'Туапсинский': 'Туапсинские'
+    }
+    
+    branch_clean = branch_name.replace(' ЭС', '').strip()
+    
+    if branch_clean in singular_to_plural:
+        normalized = singular_to_plural[branch_clean]
+        return f"{normalized} ЭС" if ' ЭС' in branch_name else normalized
+    
+    return branch_name
 
 def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False) -> str:
     """Получить ключ переменной окружения для филиала"""
@@ -270,184 +647,7 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     logger.info(f"Итоговый ключ переменной окружения: {env_key}")
     return env_key
 
-def load_csv_from_url(url: str) -> List[Dict]:
-    """Загрузить CSV файл по URL"""
-    try:
-        logger.info(f"Загружаем CSV из {url}")
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        response.encoding = 'utf-8-sig'
-        
-        csv_file = io.StringIO(response.text)
-        reader = csv.DictReader(csv_file)
-        
-        data = []
-        for row in reader:
-            normalized_row = {key.strip(): value.strip() if value else '' for key, value in row.items()}
-            data.append(normalized_row)
-        
-        logger.info(f"Успешно загружено {len(data)} строк из CSV")
-        return data
-    except requests.exceptions.Timeout:
-        logger.error(f"Таймаут при загрузке CSV из {url}")
-        return []
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка сети при загрузке CSV: {e}")
-        return []
-    except Exception as e:
-        logger.error(f"Ошибка загрузки CSV: {e}", exc_info=True)
-        return []
-
-def load_users_data():
-    """Загрузить данные пользователей из CSV"""
-    global users_cache, users_cache_backup
-    try:
-        if not ZONES_CSV_URL:
-            logger.error("ZONES_CSV_URL не задан в переменных окружения!")
-            return
-            
-        logger.info(f"Начинаем загрузку данных из {ZONES_CSV_URL}")
-        data = load_csv_from_url(ZONES_CSV_URL)
-        
-        if not data:
-            logger.error("Получен пустой список данных из CSV")
-            if users_cache_backup:
-                logger.warning("Используем резервную копию данных пользователей")
-                users_cache = users_cache_backup.copy()
-            return
-            
-        if users_cache:
-            users_cache_backup = users_cache.copy()
-            
-        users_cache = {}
-        
-        if data:
-            logger.info(f"Структура CSV (первая строка): {list(data[0].keys())}")
-        
-        for row in data:
-            telegram_id = row.get('Telegram ID', '').strip()
-            if telegram_id:
-                name_parts = []
-                fio = row.get('ФИО', '').strip()
-                
-                if 'Фамилия' in row:
-                    surname = row.get('Фамилия', '').strip()
-                else:
-                    surname = ''
-                    if telegram_id in ['248207151', '1409325335']:
-                        logger.warning("Колонка 'Фамилия' отсутствует в CSV файле")
-                
-                if fio:
-                    name_parts.append(fio)
-                if surname:
-                    name_parts.append(surname)
-                
-                full_name = ' '.join(name_parts) if name_parts else 'Неизвестный'
-                
-                users_cache[telegram_id] = {
-                    'visibility': row.get('Видимость', '').strip(),
-                    'branch': row.get('Филиал', '').strip(),
-                    'res': row.get('РЭС', '').strip(),
-                    'name': full_name,
-                    'name_without_surname': fio if fio else 'Неизвестный',
-                    'responsible': row.get('Ответственный', '').strip(),
-                    'email': row.get('Email', '').strip()
-                }
-        
-        if users_cache:
-            users_cache_backup = users_cache.copy()
-            
-        logger.info(f"Загружено {len(users_cache)} пользователей")
-        
-        if users_cache:
-            sample_users = list(users_cache.items())[:3]
-            for uid, udata in sample_users:
-                logger.info(f"Пример пользователя: ID={uid}, visibility={udata.get('visibility')}, name={udata.get('name')}, name_no_surname={udata.get('name_without_surname')}")
-                
-    except Exception as e:
-        logger.error(f"Ошибка загрузки данных пользователей: {e}", exc_info=True)
-        if users_cache_backup:
-            logger.warning("Восстанавливаем данные из резервной копии после ошибки")
-            users_cache = users_cache_backup.copy()
-
-def get_user_permissions(user_id: str) -> Dict:
-    """Получить права пользователя"""
-    if not users_cache:
-        logger.warning(f"users_cache пустой при запросе прав для пользователя {user_id}, пытаемся загрузить")
-        load_users_data()
-    
-    user_data = users_cache.get(str(user_id), {
-        'visibility': None,
-        'branch': None,
-        'res': None,
-        'name': 'Неизвестный',
-        'name_without_surname': 'Неизвестный',
-        'responsible': None
-    })
-    
-    logger.info(f"Права пользователя {user_id}: visibility={user_data.get('visibility')}, branch={user_data.get('branch')}")
-    
-    return user_data
-
-def normalize_branch_name(branch_name: str) -> str:
-    """Нормализует название филиала к стандартному формату"""
-    # Если уже нормализовано (из списка филиалов) - возвращаем как есть
-    if branch_name in ROSSETI_KUBAN_BRANCHES or branch_name in ROSSETI_YUG_BRANCHES:
-        return branch_name
-    
-    singular_to_plural = {
-        'Тимашевский': 'Тимашевские',
-        'Тихорецкий': 'Тихорецкие',
-        'Сочинский': 'Сочинские',
-        'Славянский': 'Славянские',
-        'Ленинградский': 'Ленинградские',
-        'Лабинский': 'Лабинские',
-        'Краснодарский': 'Краснодарские',
-        'Армавирский': 'Армавирские',
-        'Адыгейский': 'Адыгейские',
-        'Центральный': 'Центральные',
-        'Западный': 'Западные',
-        'Восточный': 'Восточные',
-        'Южный': 'Южные',
-        'Северо-Восточный': 'Северо-Восточные',
-        'Юго-Восточный': 'Юго-Восточные',
-        'Северный': 'Северные',
-        'Юго-Западный': 'Юго-Западные',
-        'Усть-Лабинский': 'Усть-Лабинские',
-        'Туапсинский': 'Туапсинские'
-    }
-    
-    branch_clean = branch_name.replace(' ЭС', '').strip()
-    
-    if branch_clean in singular_to_plural:
-        normalized = singular_to_plural[branch_clean]
-        return f"{normalized} ЭС" if ' ЭС' in branch_name else normalized
-    
-    return branch_name
-
-def normalize_tp_name(name: str) -> str:
-    """Нормализовать название ТП для поиска"""
-    return ''.join(filter(str.isdigit, name))
-
-def search_tp_in_data(tp_query: str, data: List[Dict], column: str) -> List[Dict]:
-    """Поиск ТП в данных"""
-    normalized_query = normalize_tp_name(tp_query)
-    results = []
-    
-    for row in data:
-        tp_name = row.get(column, '')
-        normalized_tp = normalize_tp_name(tp_name)
-        
-        if normalized_query in normalized_tp:
-            results.append(row)
-    
-    return results
-
-def update_user_activity(user_id: str):
-    """Обновить активность пользователя"""
-    if user_id not in user_activity:
-        user_activity[user_id] = {'last_activity': get_moscow_time(), 'count': 0}
-    user_activity[user_id]['last_activity'] = get_moscow_time()
+# ==================== ФУНКЦИИ КЛАВИАТУР ====================
 
 def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     """Получить главную клавиатуру в зависимости от прав"""
@@ -612,6 +812,8 @@ def get_report_action_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+# ==================== EMAIL ФУНКЦИИ ====================
+
 async def send_email(to_email: str, subject: str, body: str, attachment_data: BytesIO = None, attachment_name: str = None):
     """Отправка email через SMTP"""
     if not SMTP_EMAIL or not SMTP_PASSWORD:
@@ -673,7 +875,7 @@ async def send_email(to_email: str, subject: str, body: str, attachment_data: By
     except Exception as e:
         logger.error(f"Ошибка отправки email на {to_email}: {e}")
         return False
-        # ========== ОБРАБОТЧИКИ ==========
+        # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
@@ -713,6 +915,95 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Добро пожаловать, {permissions.get('name_without_surname', permissions.get('name', 'Пользователь'))}!",
         reply_markup=get_main_keyboard(permissions)
     )
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для проверки статуса бота"""
+    user_id = str(update.effective_user.id)
+    permissions = get_user_permissions(user_id)
+    
+    status_text = f"""🤖 Статус бота ВОЛС Ассистент v{BOT_VERSION}
+
+👤 Ваш ID: {user_id}
+📋 Ваши права: {permissions.get('visibility', 'Нет')}
+👥 Загружено пользователей: {len(users_cache)}
+💾 Резервная копия: {len(users_cache_backup)} пользователей
+🟢 Активировали бота (текущая сессия): {len(bot_users)} пользователей
+🕐 Время сервера: {get_moscow_time().strftime('%d.%m.%Y %H:%M:%S')} МСК
+
+📊 Статистика:
+• Уведомлений РК: {len(notifications_storage.get('RK', []))}
+• Уведомлений ЮГ: {len(notifications_storage.get('UG', []))}
+• Активных пользователей: {len(user_activity)}
+• CSV в кэше: {len(csv_cache)} файлов
+
+🔧 Переменные окружения:
+• BOT_TOKEN: {'✅ Задан' if BOT_TOKEN else '❌ Не задан'}
+• ZONES_CSV_URL: {'✅ Задан' if ZONES_CSV_URL else '❌ Не задан'}
+• WEBHOOK_URL: {'✅ Задан' if WEBHOOK_URL else '❌ Не задан'}
+
+⚠️ Данные о запусках бота сбрасываются после перезапуска!"""
+    
+    await update.message.reply_text(status_text)
+
+async def reload_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для принудительной перезагрузки данных пользователей"""
+    user_id = str(update.effective_user.id)
+    
+    admin_ids = ['248207151', '1409325335']
+    
+    if user_id not in admin_ids:
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды")
+        return
+    
+    loading_msg = await update.message.reply_text("🔄 Перезагружаю данные пользователей...")
+    
+    try:
+        global users_cache, users_cache_backup
+        old_count = len(users_cache)
+        users_cache = {}
+        
+        load_users_data()
+        
+        new_count = len(users_cache)
+        
+        await loading_msg.edit_text(
+            f"✅ Данные успешно перезагружены!\n"
+            f"Было пользователей: {old_count}\n"
+            f"Загружено пользователей: {new_count}\n"
+            f"Резервная копия: {len(users_cache_backup)} пользователей\n"
+            f"Активировали бота (текущая сессия): {len(bot_users)} пользователей"
+        )
+    except Exception as e:
+        await loading_msg.edit_text(f"❌ Ошибка перезагрузки: {str(e)}")
+        logger.error(f"Ошибка в команде reload: {e}", exc_info=True)
+
+async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка доступности пользователя для отправки сообщений"""
+    if len(context.args) == 0:
+        await update.message.reply_text("Использование: /checkuser <telegram_id>")
+        return
+    
+    target_id = context.args[0]
+    
+    try:
+        chat = await context.bot.get_chat(chat_id=target_id)
+        await update.message.reply_text(
+            f"✅ Пользователь доступен\n"
+            f"ID: {target_id}\n"
+            f"Имя: {chat.first_name} {chat.last_name or ''}\n"
+            f"Username: @{chat.username or 'нет'}"
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Не могу отправить сообщения пользователю {target_id}\n"
+            f"Ошибка: {str(e)}\n\n"
+            f"Возможные причины:\n"
+            f"• Пользователь не начал диалог с ботом\n"
+            f"• Пользователь заблокировал бота\n"
+            f"• Неверный ID"
+        )
+
+# ==================== ОТПРАВКА УВЕДОМЛЕНИЙ ====================
 
 async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправить уведомление ответственным лицам"""
@@ -985,6 +1276,67 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text,
         reply_markup=get_branch_menu_keyboard()
     )
+
+# ==================== ПОКАЗ РЕЗУЛЬТАТОВ ПОИСКА ====================
+
+async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
+    """Показать результаты поиска по ТП (БЕЗ ОГРАНИЧЕНИЯ НА КОЛИЧЕСТВО)"""
+    if not results:
+        await update.message.reply_text("❌ Результаты не найдены")
+        return
+        
+    # Сохраняем найденную ТП для возможности отправки уведомления
+    user_id = str(update.effective_user.id)
+    user_states[user_id]['last_search_tp'] = tp_name
+    user_states[user_id]['action'] = 'after_results'
+    logger.info(f"[show_tp_results] Сохранена ТП для отправки уведомления: {tp_name}")
+    logger.info(f"[show_tp_results] Текущий state: {user_states[user_id].get('state')}")
+    logger.info(f"[show_tp_results] Текущий action: {user_states[user_id].get('action')}")
+    
+    res_name = results[0].get('РЭС', 'Неизвестный')
+    
+    message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
+    
+    for result in results:
+        vl = result.get('Наименование ВЛ', '-')
+        supports = result.get('Опоры', '-')
+        supports_count = result.get('Количество опор', '-')
+        provider = result.get('Наименование Провайдера', '-')
+        
+        message += f"⚡ ВЛ: {vl}\n"
+        message += f"Опоры: {supports}, Количество опор: {supports_count}\n"
+        message += f"Контрагент: {provider}\n\n"
+    
+    # Разбиваем на части если сообщение слишком длинное
+    if len(message) > 4000:
+        parts = []
+        current_part = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
+        
+        for result in results:
+            result_text = f"⚡ ВЛ: {result.get('Наименование ВЛ', '-')}\n"
+            result_text += f"Опоры: {result.get('Опоры', '-')}, Количество опор: {result.get('Количество опор', '-')}\n"
+            result_text += f"Контрагент: {result.get('Наименование Провайдера', '-')}\n\n"
+            
+            if len(current_part + result_text) > 4000:
+                parts.append(current_part)
+                current_part = result_text
+            else:
+                current_part += result_text
+        
+        if current_part:
+            parts.append(current_part)
+        
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(message)
+    
+    await update.message.reply_text(
+        "Выберите действие:",
+        reply_markup=get_after_search_keyboard(tp_name)
+    )
+
+# ==================== ГЕНЕРАЦИЯ ОТЧЕТОВ ====================
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
     """Генерация отчета"""
@@ -1349,6 +1701,7 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
             await loading_msg.delete()
         await update.message.reply_text(f"❌ Ошибка генерации отчета: {str(e)}")
 
+# ==================== АДМИНИСТРИРОВАНИЕ ====================
 
 async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Уведомить всех пользователей о необходимости перезапуска бота"""
@@ -1432,7 +1785,6 @@ _Приносим извинения за неудобства._"""
             result_text += f"\n... и еще {len(failed_users) - 10} пользователей"
     
     await update.message.reply_text(result_text)
-
 
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка массовой рассылки"""
@@ -1525,8 +1877,8 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text,
         reply_markup=get_main_keyboard(get_user_permissions(user_id))
     )
+    # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
-# Продолжение следует в части 3...
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
     user_id = str(update.effective_user.id)
@@ -2106,18 +2458,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             tp_list = list(set([r['Наименование ТП'] for r in results]))
             
-            
-            tp_list = list(set([r['Наименование ТП'] for r in results]))
-            
             if len(tp_list) == 1:
                 # Если найдена только одна ТП, сразу показываем результаты
                 await show_tp_results(update, results, tp_list[0])
                 # Устанавливаем action для корректной работы кнопок
                 user_states[user_id]['action'] = 'after_results'
             else:
-                # Показываем список найденных ТП
+                # Показываем ВСЕ найденные ТП без ограничения
                 keyboard = []
-                for tp in tp_list[:10]:
+                for tp in tp_list:  # Убрали [:10] - показываем все
                     keyboard.append([tp])
                 keyboard.append(['⬅️ Назад'])
                 
@@ -2215,7 +2564,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tp_list = list(set([r['Наименование ТП'] for r in results]))
         
         keyboard = []
-        for tp in tp_list[:10]:
+        for tp in tp_list:  # Показываем ВСЕ найденные ТП
             keyboard.append([tp])
         keyboard.append(['⬅️ Назад'])
         
@@ -2598,61 +2947,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(f"❌ Документ не найден")
 
-async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
-    """Показать результаты поиска по ТП"""
-    if not results:
-        await update.message.reply_text("❌ Результаты не найдены")
-        return
-        
-    # Сохраняем найденную ТП для возможности отправки уведомления
-    user_id = str(update.effective_user.id)
-    user_states[user_id]['last_search_tp'] = tp_name
-    user_states[user_id]['action'] = 'after_results'  # ИСПРАВЛЕНО: Устанавливаем правильный action
-    logger.info(f"[show_tp_results] Сохранена ТП для отправки уведомления: {tp_name}")
-    logger.info(f"[show_tp_results] Текущий state: {user_states[user_id].get('state')}")
-    logger.info(f"[show_tp_results] Текущий action: {user_states[user_id].get('action')}")
-    
-    res_name = results[0].get('РЭС', 'Неизвестный')
-    
-    message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
-    
-    for result in results:
-        vl = result.get('Наименование ВЛ', '-')
-        supports = result.get('Опоры', '-')
-        supports_count = result.get('Количество опор', '-')
-        provider = result.get('Наименование Провайдера', '-')
-        
-        message += f"⚡ ВЛ: {vl}\n"
-        message += f"Опоры: {supports}, Количество опор: {supports_count}\n"
-        message += f"Контрагент: {provider}\n\n"
-    
-    if len(message) > 4000:
-        parts = []
-        current_part = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
-        
-        for result in results:
-            result_text = f"⚡ ВЛ: {result.get('Наименование ВЛ', '-')}\n"
-            result_text += f"Опоры: {result.get('Опоры', '-')}, Количество опор: {result.get('Количество опор', '-')}\n"
-            result_text += f"Контрагент: {result.get('Наименование Провайдера', '-')}\n\n"
-            
-            if len(current_part + result_text) > 4000:
-                parts.append(current_part)
-                current_part = result_text
-            else:
-                current_part += result_text
-        
-        if current_part:
-            parts.append(current_part)
-        
-        for part in parts:
-            await update.message.reply_text(part)
-    else:
-        await update.message.reply_text(message)
-    
-    await update.message.reply_text(
-        "Выберите действие:",
-        reply_markup=get_after_search_keyboard(tp_name)
-    )
+# ==================== ОБРАБОТЧИКИ ЛОКАЦИИ И ФОТО ====================
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка геолокации"""
@@ -2752,91 +3047,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для проверки статуса бота"""
-    user_id = str(update.effective_user.id)
-    permissions = get_user_permissions(user_id)
-    
-    status_text = f"""🤖 Статус бота ВОЛС Ассистент v{BOT_VERSION}
-
-👤 Ваш ID: {user_id}
-📋 Ваши права: {permissions.get('visibility', 'Нет')}
-👥 Загружено пользователей: {len(users_cache)}
-💾 Резервная копия: {len(users_cache_backup)} пользователей
-🟢 Активировали бота (текущая сессия): {len(bot_users)} пользователей
-🕐 Время сервера: {get_moscow_time().strftime('%d.%m.%Y %H:%M:%S')} МСК
-
-📊 Статистика:
-• Уведомлений РК: {len(notifications_storage.get('RK', []))}
-• Уведомлений ЮГ: {len(notifications_storage.get('UG', []))}
-• Активных пользователей: {len(user_activity)}
-
-🔧 Переменные окружения:
-• BOT_TOKEN: {'✅ Задан' if BOT_TOKEN else '❌ Не задан'}
-• ZONES_CSV_URL: {'✅ Задан' if ZONES_CSV_URL else '❌ Не задан'}
-• WEBHOOK_URL: {'✅ Задан' if WEBHOOK_URL else '❌ Не задан'}
-
-⚠️ Данные о запусках бота сбрасываются после перезапуска!"""
-    
-    await update.message.reply_text(status_text)
-
-async def reload_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для принудительной перезагрузки данных пользователей"""
-    user_id = str(update.effective_user.id)
-    
-    admin_ids = ['248207151', '1409325335']
-    
-    if user_id not in admin_ids:
-        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды")
-        return
-    
-    loading_msg = await update.message.reply_text("🔄 Перезагружаю данные пользователей...")
-    
-    try:
-        global users_cache, users_cache_backup
-        old_count = len(users_cache)
-        users_cache = {}
-        
-        load_users_data()
-        
-        new_count = len(users_cache)
-        
-        await loading_msg.edit_text(
-            f"✅ Данные успешно перезагружены!\n"
-            f"Было пользователей: {old_count}\n"
-            f"Загружено пользователей: {new_count}\n"
-            f"Резервная копия: {len(users_cache_backup)} пользователей\n"
-            f"Активировали бота (текущая сессия): {len(bot_users)} пользователей"
-        )
-    except Exception as e:
-        await loading_msg.edit_text(f"❌ Ошибка перезагрузки: {str(e)}")
-        logger.error(f"Ошибка в команде reload: {e}", exc_info=True)
-
-async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка доступности пользователя для отправки сообщений"""
-    if len(context.args) == 0:
-        await update.message.reply_text("Использование: /checkuser <telegram_id>")
-        return
-    
-    target_id = context.args[0]
-    
-    try:
-        chat = await context.bot.get_chat(chat_id=target_id)
-        await update.message.reply_text(
-            f"✅ Пользователь доступен\n"
-            f"ID: {target_id}\n"
-            f"Имя: {chat.first_name} {chat.last_name or ''}\n"
-            f"Username: @{chat.username or 'нет'}"
-        )
-    except Exception as e:
-        await update.message.reply_text(
-            f"❌ Не могу отправить сообщения пользователю {target_id}\n"
-            f"Ошибка: {str(e)}\n\n"
-            f"Возможные причины:\n"
-            f"• Пользователь не начал диалог с ботом\n"
-            f"• Пользователь заблокировал бота\n"
-            f"• Неверный ID"
-        )
+# ==================== ФОНОВЫЕ ЗАДАЧИ ====================
 
 async def preload_documents():
     """Предзагрузка документов в кэш при старте"""
@@ -2856,7 +3067,7 @@ async def preload_documents():
 async def refresh_users_data():
     """Периодическое обновление данных пользователей"""
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(300)  # Каждые 5 минут
         logger.info("Обновляем данные пользователей...")
         try:
             load_users_data()
@@ -2867,14 +3078,14 @@ async def refresh_users_data():
 async def save_bot_users_periodically():
     """Периодическое сохранение данных о пользователях бота"""
     while True:
-        await asyncio.sleep(600)
+        await asyncio.sleep(600)  # Каждые 10 минут
         save_bot_users()
         logger.info("Автосохранение данных пользователей бота")
 
 async def refresh_documents_cache():
     """Периодическое обновление кэша документов"""
     while True:
-        await asyncio.sleep(3600)
+        await asyncio.sleep(3600)  # Каждый час
         logger.info("Обновляем кэш документов...")
         
         for doc_name in list(documents_cache.keys()):
@@ -2888,6 +3099,35 @@ async def refresh_documents_cache():
                     logger.info(f"✅ Обновлен кэш для {doc_name}")
                 except Exception as e:
                     logger.error(f"❌ Ошибка обновления кэша {doc_name}: {e}")
+
+# ==================== НАСТРОЙКА ВЕБХУКА ====================
+
+async def setup_webhook(application: Application, webhook_url: str):
+    """Настройка вебхука"""
+    try:
+        # Удаляем старый вебхук
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        
+        # Устанавливаем новый
+        success = await application.bot.set_webhook(
+            url=webhook_url,
+            allowed_updates=Update.ALL_TYPES
+        )
+        
+        if success:
+            logger.info(f"✅ Вебхук установлен: {webhook_url}")
+            
+            # Проверяем информацию о вебхуке
+            webhook_info = await application.bot.get_webhook_info()
+            logger.info(f"📌 Webhook URL: {webhook_info.url}")
+            logger.info(f"📌 Pending updates: {webhook_info.pending_update_count}")
+        else:
+            logger.error("❌ Не удалось установить вебхук")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка настройки вебхука: {e}")
+
+# ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
 
 if __name__ == '__main__':
     def signal_handler(sig, frame):
@@ -2908,6 +3148,7 @@ if __name__ == '__main__':
     
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("reload", reload_users))
@@ -2917,13 +3158,14 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_error_handler(error_handler)
     
+    # Загружаем данные
     load_users_data()
-    
     load_bot_users()
     
     async def init_and_start():
-        """Инициализация и запуск"""
+        """Инициализация и запуск фоновых задач"""
         await preload_documents()
+        await preload_csv_files()  # Предзагрузка CSV
         
         asyncio.create_task(refresh_documents_cache())
         asyncio.create_task(refresh_users_data())
@@ -2942,10 +3184,16 @@ if __name__ == '__main__':
     if hasattr(application, 'post_shutdown'):
         application.post_shutdown = post_shutdown
     
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
-        drop_pending_updates=True
-    )
+    # Запуск бота
+    if WEBHOOK_URL:
+        logger.info(f"🌐 Запуск в режиме вебхука: {WEBHOOK_URL}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=BOT_TOKEN,
+            webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+            drop_pending_updates=True
+        )
+    else:
+        logger.info("🤖 Запуск в режиме polling...")
+        application.run_polling(drop_pending_updates=True)
