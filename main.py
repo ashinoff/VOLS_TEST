@@ -455,16 +455,15 @@ async def get_cached_document(doc_name: str, doc_url: str) -> Optional[BytesIO]:
 # ==================== ЗАГРУЗКА ДАННЫХ ПОЛЬЗОВАТЕЛЕЙ ====================
 
 def load_users_data():
-    """Загрузить данные пользователей из CSV с оптимизацией"""
+    """Загрузить данные пользователей из CSV (оставляем синхронной как в оригинале)"""
     global users_cache, users_cache_backup
     try:
         if not ZONES_CSV_URL:
             logger.error("ZONES_CSV_URL не задан в переменных окружения!")
             return
-        
-        # Используем кэшированную версию если есть
-        logger.info(f"Начинаем загрузку данных пользователей")
-        data = load_csv_from_url(ZONES_CSV_URL)
+            
+        logger.info(f"Начинаем загрузку данных из {ZONES_CSV_URL}")
+        data = load_csv_from_url(ZONES_CSV_URL)  # Использует кэш автоматически
         
         if not data:
             logger.error("Получен пустой список данных из CSV")
@@ -472,20 +471,27 @@ def load_users_data():
                 logger.warning("Используем резервную копию данных пользователей")
                 users_cache = users_cache_backup.copy()
             return
-        
-        # Сохраняем текущий кэш как резервную копию
+            
         if users_cache:
             users_cache_backup = users_cache.copy()
-        
+            
         users_cache = {}
         
-        # Обрабатываем данные
+        if data:
+            logger.info(f"Структура CSV (первая строка): {list(data[0].keys())}")
+        
         for row in data:
             telegram_id = row.get('Telegram ID', '').strip()
             if telegram_id:
                 name_parts = []
                 fio = row.get('ФИО', '').strip()
-                surname = row.get('Фамилия', '').strip() if 'Фамилия' in row else ''
+                
+                if 'Фамилия' in row:
+                    surname = row.get('Фамилия', '').strip()
+                else:
+                    surname = ''
+                    if telegram_id in ['248207151', '1409325335']:
+                        logger.warning("Колонка 'Фамилия' отсутствует в CSV файле")
                 
                 if fio:
                     name_parts.append(fio)
@@ -506,9 +512,14 @@ def load_users_data():
         
         if users_cache:
             users_cache_backup = users_cache.copy()
+            
+        logger.info(f"Загружено {len(users_cache)} пользователей")
         
-        logger.info(f"✅ Загружено {len(users_cache)} пользователей")
-        
+        if users_cache:
+            sample_users = list(users_cache.items())[:3]
+            for uid, udata in sample_users:
+                logger.info(f"Пример пользователя: ID={uid}, visibility={udata.get('visibility')}, name={udata.get('name')}")
+                
     except Exception as e:
         logger.error(f"Ошибка загрузки данных пользователей: {e}", exc_info=True)
         if users_cache_backup:
@@ -776,6 +787,7 @@ def get_document_action_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+# 🔴 ИЗМЕНЕНИЕ 1 - ОБНОВЛЯЕМ ФУНКЦИЮ get_after_search_keyboard
 def get_after_search_keyboard(tp_name: str = None) -> ReplyKeyboardMarkup:
     """Клавиатура после результатов поиска"""
     keyboard = [
@@ -783,13 +795,12 @@ def get_after_search_keyboard(tp_name: str = None) -> ReplyKeyboardMarkup:
     ]
     
     if tp_name:
-        # Обрезаем название ТП если слишком длинное
+        # Обрезаем название ТП если слишком длинное для кнопки
         display_tp = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
         keyboard.append([f'📨 Отправить уведомление по {display_tp}'])
     else:
         keyboard.append(['📨 Отправить уведомление'])
     
-    keyboard.append(['📋 В главное меню'])
     keyboard.append(['⬅️ Назад'])
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -865,51 +876,7 @@ async def send_email(to_email: str, subject: str, body: str, attachment_data: By
     except Exception as e:
         logger.error(f"Ошибка отправки email на {to_email}: {e}")
         return False
-
-async def send_email_notification(responsible: Dict, notification_data: Dict, sender_info: Dict) -> bool:
-    """Отправка email уведомления"""
-    try:
-        moscow_time = get_moscow_time()
-        email_subject = f"ВОЛС: Уведомление от {sender_info['name']}"
-        email_body = f"""Добрый день, {responsible['name']}!
-
-Получено новое уведомление о бездоговорном ВОЛС.
-
-Филиал: {notification_data['branch']}
-РЭС: {notification_data['res']}
-ТП: {notification_data['tp']}
-ВЛ: {notification_data['vl']}
-
-Отправитель: {sender_info['name']}
-Время: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК"""
-
-        if notification_data['coordinates'] != 'Не указаны':
-            coords = notification_data['coordinates'].split(', ')
-            if len(coords) == 2:
-                lat, lon = coords
-                email_body += f"\n\nКоординаты: {lat}, {lon}"
-                email_body += f"\nСсылка на карту: https://maps.google.com/?q={lat},{lon}"
-        
-        if notification_data['comment']:
-            email_body += f"\n\nКомментарий: {notification_data['comment']}"
-            
-        if notification_data['has_photo']:
-            email_body += f"\n\nК уведомлению приложено фото (доступно в Telegram)"
-        
-        email_body += f"""
-
-Для просмотра деталей и фотографий откройте Telegram.
-
-С уважением,
-Бот ВОЛС Ассистент"""
-        
-        return await send_email(responsible['email'], email_subject, email_body)
-        
-    except Exception as e:
-        logger.error(f"Ошибка отправки email для {responsible['name']}: {e}")
-        return False
-
-# ==================== ОБРАБОТЧИКИ КОМАНД ====================
+        # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
@@ -1036,8 +1003,286 @@ async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Пользователь заблокировал бота\n"
             f"• Неверный ID"
         )
-        # ==================== ПОКАЗ РЕЗУЛЬТАТОВ ПОИСКА ====================
 
+# ==================== ОТПРАВКА УВЕДОМЛЕНИЙ ====================
+
+# 🔴 ИЗМЕНЕНИЕ 2 - ОБНОВЛЯЕМ ФУНКЦИЮ send_notification
+async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправить уведомление ответственным лицам"""
+    user_id = str(update.effective_user.id)
+    user_data = user_states.get(user_id, {})
+    
+    sender_info = get_user_permissions(user_id)
+    
+    tp_data = user_data.get('tp_data', {})
+    selected_tp = user_data.get('selected_tp')
+    selected_vl = user_data.get('selected_vl')
+    location = user_data.get('location', {})
+    photo_id = user_data.get('photo_id')
+    comment = user_data.get('comment', '')
+    
+    logger.info(f"Отправка уведомления от пользователя {user_id}")
+    logger.info(f"ТП: {selected_tp}, ВЛ: {selected_vl}")
+    logger.info(f"tp_data: {tp_data}")
+    
+    branch_from_reference = tp_data.get('Филиал', '').strip()
+    res_from_reference = tp_data.get('РЭС', '').strip()
+    
+    branch = user_data.get('branch')
+    network = user_data.get('network')
+    
+    # Если branch не найден в состоянии, берем из прав пользователя
+    if not branch:
+        sender_permissions = get_user_permissions(user_id)
+        branch = sender_permissions.get('branch')
+        logger.warning(f"Branch не найден в состоянии, используем из прав пользователя: {branch}")
+    
+    # Если network не найден, определяем по branch
+    if not network:
+        if branch in ROSSETI_KUBAN_BRANCHES or any(branch.startswith(b.replace(' ЭС', '')) for b in ROSSETI_KUBAN_BRANCHES):
+            network = 'RK'
+        else:
+            network = 'UG'
+        logger.warning(f"Network не найден в состоянии, определен как: {network}")
+    
+    sending_messages = [
+        "📨 Подготовка уведомления...",
+        "🔍 Поиск ответственных лиц...",
+        "📤 Отправка уведомлений...",
+        "📧 Отправка email...",
+        "✅ Почти готово..."
+    ]
+    
+    loading_msg = await update.message.reply_text(sending_messages[0])
+    
+    for msg_text in sending_messages[1:]:
+        await asyncio.sleep(0.5)
+        try:
+            await loading_msg.edit_text(msg_text)
+        except Exception:
+            pass
+    
+    responsible_users = []
+    
+    logger.info(f"Ищем ответственных для:")
+    logger.info(f"  Филиал из справочника: '{branch_from_reference}'")
+    logger.info(f"  РЭС из справочника: '{res_from_reference}'")
+    
+    for uid, udata in users_cache.items():
+        responsible_for = udata.get('responsible', '').strip()
+        
+        if not responsible_for:
+            continue
+            
+        if responsible_for == branch_from_reference or responsible_for == res_from_reference:
+            responsible_users.append({
+                'id': uid,
+                'name': udata.get('name', 'Неизвестный'),
+                'email': udata.get('email', ''),
+                'responsible_for': responsible_for
+            })
+            logger.info(f"Найден ответственный: {udata.get('name')} (ID: {uid}) - отвечает за '{responsible_for}'")
+    
+    moscow_time = get_moscow_time()
+    notification_text = f"""🚨 НОВОЕ УВЕДОМЛЕНИЕ О БЕЗДОГОВОРНОМ ВОЛС
+
+📍 Филиал: {branch}
+📍 РЭС: {res_from_reference}
+📍 ТП: {selected_tp}
+⚡ ВЛ: {selected_vl}
+
+👤 Отправитель: {sender_info['name']}
+🕐 Время: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК"""
+
+    if location:
+        lat = location.get('latitude')
+        lon = location.get('longitude')
+        notification_text += f"\n📍 Координаты: {lat:.6f}, {lon:.6f}"
+        notification_text += f"\n🗺 [Открыть на карте](https://maps.google.com/?q={lat},{lon})"
+    
+    if comment:
+        notification_text += f"\n\n💬 Комментарий: {comment}"
+    
+    recipients_info = ", ".join([u['name'] for u in responsible_users]) if responsible_users else "Не найдены"
+    
+    notification_data = {
+        'branch': branch,
+        'res': res_from_reference,
+        'tp': selected_tp,
+        'vl': selected_vl,
+        'sender_name': sender_info['name'],
+        'sender_id': user_id,
+        'recipient_name': recipients_info,
+        'recipient_id': ", ".join([u['id'] for u in responsible_users]) if responsible_users else 'Не найдены',
+        'datetime': moscow_time.strftime('%d.%m.%Y %H:%M'),
+        'coordinates': f"{location.get('latitude', 0):.6f}, {location.get('longitude', 0):.6f}" if location else 'Не указаны',
+        'comment': comment,
+        'has_photo': bool(photo_id)
+    }
+    
+    notifications_storage[network].append(notification_data)
+    
+    if user_id not in user_activity:
+        user_activity[user_id] = {'last_activity': get_moscow_time(), 'count': 0}
+    user_activity[user_id]['count'] += 1
+    user_activity[user_id]['last_activity'] = get_moscow_time()
+    
+    success_count = 0
+    email_success_count = 0
+    failed_users = []
+    
+    for responsible in responsible_users:
+        try:
+            await context.bot.send_message(
+                chat_id=responsible['id'],
+                text=notification_text,
+                parse_mode='Markdown'
+            )
+            
+            if location:
+                await context.bot.send_location(
+                    chat_id=responsible['id'],
+                    latitude=location.get('latitude'),
+                    longitude=location.get('longitude')
+                )
+            
+            if photo_id:
+                await context.bot.send_photo(
+                    chat_id=responsible['id'],
+                    photo=photo_id,
+                    caption=f"Фото с {selected_tp}"
+                )
+            
+            success_count += 1
+            
+            if responsible['email']:
+                email_subject = f"ВОЛС: Уведомление от {sender_info['name']}"
+                email_body = f"""Добрый день, {responsible['name']}!
+
+Получено новое уведомление о бездоговорном ВОЛС.
+
+Филиал: {branch}
+РЭС: {res_from_reference}
+ТП: {selected_tp}
+ВЛ: {selected_vl}
+
+Отправитель: {sender_info['name']}
+Время: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК"""
+
+                if location:
+                    lat = location.get('latitude')
+                    lon = location.get('longitude')
+                    email_body += f"\n\nКоординаты: {lat:.6f}, {lon:.6f}"
+                    email_body += f"\nСсылка на карту: https://maps.google.com/?q={lat},{lon}"
+                
+                if comment:
+                    email_body += f"\n\nКомментарий: {comment}"
+                    
+                if photo_id:
+                    email_body += f"\n\nК уведомлению приложено фото (доступно в Telegram)"
+                
+                email_body += f"""
+
+Для просмотра деталей и фотографий откройте Telegram.
+
+С уважением,
+Бот ВОЛС Ассистент"""
+                
+                email_sent = await send_email(responsible['email'], email_subject, email_body)
+                if email_sent:
+                    email_success_count += 1
+                    logger.info(f"Email успешно отправлен для {responsible['name']} на {responsible['email']}")
+                else:
+                    logger.error(f"Не удалось отправить email для {responsible['name']} на {responsible['email']}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления пользователю {responsible['name']} ({responsible['id']}): {e}")
+            failed_users.append(f"{responsible['name']} ({responsible['id']}): {str(e)}")
+    
+    await loading_msg.delete()
+    
+    if responsible_users:
+        if success_count == len(responsible_users):
+            result_text = f"""✅ Уведомления успешно отправлены!
+
+📨 Получатели ({success_count}):"""
+            for responsible in responsible_users:
+                result_text += f"\n• {responsible['name']} (отвечает за {responsible['responsible_for']})"
+            
+            if email_success_count > 0:
+                result_text += f"\n\n📧 Email отправлено: {email_success_count} из {len([r for r in responsible_users if r['email']])}"
+        else:
+            result_text = f"""⚠️ Уведомления отправлены частично
+
+✅ Успешно: {success_count} из {len(responsible_users)}
+📧 Email отправлено: {email_success_count}
+
+❌ Ошибки:"""
+            for failed in failed_users:
+                result_text += f"\n• {failed}"
+    else:
+        result_text = f"""❌ Ответственные не найдены
+
+Для данной ТП не назначены ответственные лица.
+Уведомление сохранено в системе и будет доступно в отчетах.
+
+Отладочная информация:
+- Филиал из справочника: "{branch_from_reference}"
+- РЭС из справочника: "{res_from_reference}"
+- Всего пользователей в базе: {len(users_cache)}"""
+    
+    # Очищаем временные данные уведомления
+    user_states[user_id]['location'] = None
+    user_states[user_id]['photo_id'] = None
+    user_states[user_id]['comment'] = ''
+    
+    # 🔴 ДОБАВЛЯЕМ ЛОГИКУ ДЛЯ ПРОДОЛЖЕНИЯ
+    # Если пришли из поиска - возвращаемся к выбору ВЛ
+    if 'last_search_tp' in user_states[user_id]:
+        user_states[user_id]['state'] = 'send_notification'
+        user_states[user_id]['action'] = 'select_vl'
+        
+        # Перезагружаем данные из справочника для получения списка ВЛ
+        env_key = get_env_key_for_branch(branch, network, is_reference=True)
+        csv_url = os.environ.get(env_key)
+        
+        if csv_url:
+            data = load_csv_from_url(csv_url)
+            results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+            
+            # Фильтруем по РЭС если нужно
+            user_permissions = get_user_permissions(user_id)
+            user_res = user_permissions.get('res')
+            if user_res and user_res != 'All':
+                results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+            
+            if results:
+                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                keyboard = []
+                for vl in vl_list:
+                    keyboard.append([vl])
+                keyboard.append(['🔍 Новый поиск'])
+                keyboard.append(['⬅️ Назад'])
+                
+                await update.message.reply_text(
+                    result_text + f"\n\n✨ Можете отправить еще уведомление по этой же ТП:\n📍 ТП: {selected_tp}\n\nВыберите ВЛ:",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+                return
+    
+    # Иначе - стандартное поведение (возврат в меню филиала)
+    user_states[user_id]['state'] = f'branch_{branch}'
+    user_states[user_id]['branch'] = branch
+    user_states[user_id]['network'] = network
+    
+    await update.message.reply_text(
+        result_text,
+        reply_markup=get_branch_menu_keyboard()
+    )
+
+# ==================== ПОКАЗ РЕЗУЛЬТАТОВ ПОИСКА ====================
+
+# 🔴 ИЗМЕНЕНИЕ 3 - ОБНОВЛЯЕМ ФУНКЦИЮ show_tp_results
 async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
     """Показать результаты поиска по ТП с группировкой по ВЛ"""
     if not results:
@@ -1047,9 +1292,8 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
     # Сохраняем найденную ТП для возможности отправки уведомления
     user_id = str(update.effective_user.id)
     user_states[user_id]['last_search_tp'] = tp_name
-    user_states[user_id]['action'] = 'after_results'
     user_states[user_id]['search_results_data'] = results  # Сохраняем все результаты
-    
+    user_states[user_id]['action'] = 'after_results'
     logger.info(f"[show_tp_results] Сохранена ТП для отправки уведомления: {tp_name}")
     logger.info(f"[show_tp_results] Найдено результатов: {len(results)}")
     
@@ -1126,585 +1370,7 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
         "Выберите действие:",
         reply_markup=get_after_search_keyboard(tp_name)
     )
-
-# ==================== ОБРАБОТКА ОТПРАВКИ УВЕДОМЛЕНИЯ ПОСЛЕ ПОИСКА ====================
-
-async def handle_notification_from_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка отправки уведомления из результатов поиска с проверкой в справочнике"""
-    user_id = str(update.effective_user.id)
-    
-    # Получаем сохраненную ТП из поиска
-    tp_from_search = user_states[user_id].get('last_search_tp')
-    branch = user_states[user_id].get('branch')
-    network = user_states[user_id].get('network')
-    
-    if not tp_from_search:
-        await update.message.reply_text("❌ Сначала выполните поиск ТП")
-        return
-    
-    logger.info(f"Обработка уведомления для ТП из поиска: {tp_from_search}")
-    
-    # Проверяем права пользователя
-    user_permissions = get_user_permissions(user_id)
-    user_branch = user_permissions.get('branch')
-    
-    # Если у пользователя указан конкретный филиал в правах - используем его
-    if user_branch and user_branch != 'All':
-        branch = user_branch
-        logger.info(f"Используем филиал из прав пользователя: {branch}")
-    
-    # Загружаем СПРАВОЧНИК для поиска этой ТП
-    env_key = get_env_key_for_branch(branch, network, is_reference=True)
-    csv_url = os.environ.get(env_key)
-    
-    if not csv_url:
-        await update.message.reply_text(f"❌ Справочник для филиала {branch} не найден")
-        return
-    
-    loading_msg = await update.message.reply_text("🔍 Ищу ТП в справочнике для отправки уведомления...")
-    
-    # Загружаем данные из справочника
-    reference_data = load_csv_from_url(csv_url)
-    
-    # Ищем ТП в справочнике
-    reference_results = search_tp_in_data(tp_from_search, reference_data, 'Наименование ТП')
-    
-    # Фильтруем по РЭС если у пользователя ограничения
-    user_res = user_permissions.get('res')
-    if user_res and user_res != 'All':
-        reference_results = [r for r in reference_results if r.get('РЭС', '').strip() == user_res]
-    
-    await loading_msg.delete()
-    
-    if not reference_results:
-        # Если точного совпадения нет - ищем похожие
-        await update.message.reply_text(
-            f"⚠️ ТП '{tp_from_search}' не найдена в справочнике точно.\n"
-            "Ищу похожие названия..."
-        )
-        
-        # Ищем все ТП которые содержат части искомого названия
-        search_parts = tp_from_search.split()
-        similar_tps = set()
-        
-        for row in reference_data:
-            tp_name = row.get('Наименование ТП', '')
-            if not tp_name:
-                continue
-                
-            # Проверяем РЭС если есть ограничения
-            if user_res and user_res != 'All':
-                if row.get('РЭС', '').strip() != user_res:
-                    continue
-            
-            # Проверяем совпадение частей
-            for part in search_parts:
-                if len(part) > 2 and part.upper() in tp_name.upper():
-                    similar_tps.add(tp_name)
-                    break
-        
-        if similar_tps:
-            # Показываем список похожих ТП из справочника
-            keyboard = []
-            for tp in sorted(similar_tps)[:15]:  # Ограничиваем 15 вариантами
-                keyboard.append([tp])
-            keyboard.append(['❌ Отмена'])
-            keyboard.append(['⬅️ Назад'])
-            
-            user_states[user_id]['state'] = 'send_notification'
-            user_states[user_id]['action'] = 'select_reference_tp'
-            user_states[user_id]['reference_data'] = reference_data
-            
-            await update.message.reply_text(
-                f"📋 В справочнике найдены похожие ТП ({len(similar_tps)} шт.).\n"
-                f"Выберите нужную для отправки уведомления:",
-                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            )
-        else:
-            await update.message.reply_text(
-                "❌ В справочнике не найдено похожих ТП.\n"
-                "Попробуйте выполнить поиск с другим названием."
-            )
-        return
-    
-    # Если нашли точное совпадение - продолжаем с первым результатом
-    tp_data = reference_results[0]
-    selected_tp = tp_data.get('Наименование ТП')
-    
-    # Сохраняем данные и переходим к выбору ВЛ
-    user_states[user_id]['state'] = 'send_notification'
-    user_states[user_id]['action'] = 'select_vl'
-    user_states[user_id]['selected_tp'] = selected_tp
-    user_states[user_id]['tp_data'] = tp_data
-    user_states[user_id]['branch'] = branch
-    user_states[user_id]['network'] = network
-    user_states[user_id]['from_search'] = True  # Флаг что пришли из поиска
-    
-    # Получаем список ВЛ для этой ТП из справочника
-    vl_list = list(set([r['Наименование ВЛ'] for r in reference_results]))
-    
-    keyboard = []
-    for vl in sorted(vl_list):
-        keyboard.append([vl])
-    keyboard.append(['🔍 Новый поиск'])
-    keyboard.append(['⬅️ Назад'])
-    
-    await update.message.reply_text(
-        f"✅ ТП найдена в справочнике!\n\n"
-        f"📨 Отправка уведомления по ТП: {selected_tp}\n"
-        f"📍 РЭС: {tp_data.get('РЭС', '-')}\n\n"
-        f"Выберите ВЛ для уведомления:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
-
-# ==================== УЛУЧШЕННАЯ ОТПРАВКА УВЕДОМЛЕНИЙ ====================
-
-async def send_notification_improved(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Улучшенная отправка уведомления с возможностью продолжить"""
-    user_id = str(update.effective_user.id)
-    user_data = user_states.get(user_id, {})
-    
-    sender_info = get_user_permissions(user_id)
-    
-    tp_data = user_data.get('tp_data', {})
-    selected_tp = user_data.get('selected_tp')
-    selected_vl = user_data.get('selected_vl')
-    location = user_data.get('location', {})
-    photo_id = user_data.get('photo_id')
-    comment = user_data.get('comment', '')
-    
-    logger.info(f"Отправка уведомления от пользователя {user_id}")
-    logger.info(f"ТП: {selected_tp}, ВЛ: {selected_vl}")
-    
-    branch_from_reference = tp_data.get('Филиал', '').strip()
-    res_from_reference = tp_data.get('РЭС', '').strip()
-    
-    branch = user_data.get('branch')
-    network = user_data.get('network')
-    
-    # Анимация отправки
-    sending_messages = [
-        "📨 Подготовка уведомления...",
-        "🔍 Поиск ответственных лиц...",
-        "📤 Отправка уведомлений...",
-        "📧 Отправка email...",
-        "✅ Почти готово..."
-    ]
-    
-    loading_msg = await update.message.reply_text(sending_messages[0])
-    
-    for msg_text in sending_messages[1:]:
-        await asyncio.sleep(0.5)
-        try:
-            await loading_msg.edit_text(msg_text)
-        except Exception:
-            pass
-    
-    # Поиск ответственных
-    responsible_users = []
-    
-    for uid, udata in users_cache.items():
-        responsible_for = udata.get('responsible', '').strip()
-        
-        if not responsible_for:
-            continue
-            
-        if responsible_for == branch_from_reference or responsible_for == res_from_reference:
-            responsible_users.append({
-                'id': uid,
-                'name': udata.get('name', 'Неизвестный'),
-                'email': udata.get('email', ''),
-                'responsible_for': responsible_for
-            })
-    
-    # Формирование текста уведомления
-    moscow_time = get_moscow_time()
-    notification_text = f"""🚨 НОВОЕ УВЕДОМЛЕНИЕ О БЕЗДОГОВОРНОМ ВОЛС
-
-📍 Филиал: {branch}
-📍 РЭС: {res_from_reference}
-📍 ТП: {selected_tp}
-⚡ ВЛ: {selected_vl}
-
-👤 Отправитель: {sender_info['name']}
-🕐 Время: {moscow_time.strftime('%d.%m.%Y %H:%M')} МСК"""
-
-    if location:
-        lat = location.get('latitude')
-        lon = location.get('longitude')
-        notification_text += f"\n📍 Координаты: {lat:.6f}, {lon:.6f}"
-        notification_text += f"\n🗺 [Открыть на карте](https://maps.google.com/?q={lat},{lon})"
-    
-    if comment:
-        notification_text += f"\n\n💬 Комментарий: {comment}"
-    
-    # Сохранение в хранилище
-    recipients_info = ", ".join([u['name'] for u in responsible_users]) if responsible_users else "Не найдены"
-    
-    notification_data = {
-        'branch': branch,
-        'res': res_from_reference,
-        'tp': selected_tp,
-        'vl': selected_vl,
-        'sender_name': sender_info['name'],
-        'sender_id': user_id,
-        'recipient_name': recipients_info,
-        'recipient_id': ", ".join([u['id'] for u in responsible_users]) if responsible_users else 'Не найдены',
-        'datetime': moscow_time.strftime('%d.%m.%Y %H:%M'),
-        'coordinates': f"{location.get('latitude', 0):.6f}, {location.get('longitude', 0):.6f}" if location else 'Не указаны',
-        'comment': comment,
-        'has_photo': bool(photo_id)
-    }
-    
-    notifications_storage[network].append(notification_data)
-    
-    # Обновление активности
-    if user_id not in user_activity:
-        user_activity[user_id] = {'last_activity': get_moscow_time(), 'count': 0}
-    user_activity[user_id]['count'] += 1
-    user_activity[user_id]['last_activity'] = get_moscow_time()
-    
-    # Отправка уведомлений
-    success_count = 0
-    email_success_count = 0
-    failed_users = []
-    
-    for responsible in responsible_users:
-        try:
-            # Отправка в Telegram
-            await context.bot.send_message(
-                chat_id=responsible['id'],
-                text=notification_text,
-                parse_mode='Markdown'
-            )
-            
-            if location:
-                await context.bot.send_location(
-                    chat_id=responsible['id'],
-                    latitude=location.get('latitude'),
-                    longitude=location.get('longitude')
-                )
-            
-            if photo_id:
-                await context.bot.send_photo(
-                    chat_id=responsible['id'],
-                    photo=photo_id,
-                    caption=f"Фото с {selected_tp}"
-                )
-            
-            success_count += 1
-            
-            # Отправка на email
-            if responsible['email']:
-                email_sent = await send_email_notification(responsible, notification_data, sender_info)
-                if email_sent:
-                    email_success_count += 1
-                
-        except Exception as e:
-            logger.error(f"Ошибка отправки уведомления пользователю {responsible['name']} ({responsible['id']}): {e}")
-            failed_users.append(f"{responsible['name']} ({responsible['id']}): {str(e)}")
-    
-    await loading_msg.delete()
-    
-    # Формирование результата
-    if responsible_users:
-        if success_count == len(responsible_users):
-            result_text = f"""✅ Уведомления успешно отправлены!
-
-📨 Получатели ({success_count}):"""
-            for responsible in responsible_users:
-                result_text += f"\n• {responsible['name']} (отвечает за {responsible['responsible_for']})"
-            
-            if email_success_count > 0:
-                result_text += f"\n\n📧 Email отправлено: {email_success_count} из {len([r for r in responsible_users if r['email']])}"
-        else:
-            result_text = f"""⚠️ Уведомления отправлены частично
-
-✅ Успешно: {success_count} из {len(responsible_users)}
-📧 Email отправлено: {email_success_count}
-
-❌ Ошибки:"""
-            for failed in failed_users:
-                result_text += f"\n• {failed}"
-    else:
-        result_text = f"""❌ Ответственные не найдены
-
-Для данной ТП не назначены ответственные лица.
-Уведомление сохранено в системе и будет доступно в отчетах."""
-    
-    # Очищаем временные данные
-    user_states[user_id]['location'] = None
-    user_states[user_id]['photo_id'] = None
-    user_states[user_id]['comment'] = ''
-    
-    # ВАЖНО: Проверяем откуда пришли
-    from_search = user_states[user_id].get('from_search', False)
-    
-    if from_search or 'last_search_tp' in user_states[user_id]:
-        # Если пришли из поиска - предлагаем отправить еще по этой же ТП
-        user_states[user_id]['state'] = 'send_notification'
-        user_states[user_id]['action'] = 'continue_same_tp'
-        
-        # Перезагружаем список ВЛ для этой ТП
-        env_key = get_env_key_for_branch(branch, network, is_reference=True)
-        csv_url = os.environ.get(env_key)
-        
-        if csv_url:
-            data = load_csv_from_url(csv_url)
-            results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
-            
-            # Фильтруем по РЭС если нужно
-            user_permissions = get_user_permissions(user_id)
-            user_res = user_permissions.get('res')
-            if user_res and user_res != 'All':
-                results = [r for r in results if r.get('РЭС', '').strip() == user_res]
-            
-            if results:
-                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
-                
-                # Убираем ВЛ по которой только что отправили
-                if selected_vl in vl_list:
-                    vl_list.remove(selected_vl)
-                
-                if vl_list:  # Если есть еще ВЛ
-                    keyboard = []
-                    for vl in sorted(vl_list):
-                        keyboard.append([vl])
-                    keyboard.append(['🔍 Вернуться к поиску'])
-                    keyboard.append(['📋 В главное меню'])
-                    
-                    await update.message.reply_text(
-                        result_text + f"\n\n✨ Отправить еще уведомление по этой ТП?\n\n"
-                        f"📍 ТП: {selected_tp}\n"
-                        f"✅ Уже отправлено по: {selected_vl}\n\n"
-                        f"Выберите другую ВЛ или вернитесь в меню:",
-                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                    )
-                    
-                    # Устанавливаем флаг для продолжения
-                    user_states[user_id]['continue_tp'] = selected_tp
-                    user_states[user_id]['sent_vls'] = [selected_vl]  # Список отправленных ВЛ
-                    return
-    
-    # Стандартное поведение - возврат в меню филиала
-    user_states[user_id]['state'] = f'branch_{branch}'
-    user_states[user_id]['branch'] = branch
-    user_states[user_id]['network'] = network
-    user_states[user_id]['from_search'] = False
-    
-    await update.message.reply_text(
-        result_text,
-        reply_markup=get_branch_menu_keyboard()
-    )
-
-async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Основная функция отправки уведомления - заменяем на улучшенную версию"""
-    await send_notification_improved(update, context)
-
-# ==================== ОБРАБОТКА ПРОДОЛЖЕНИЯ ОТПРАВКИ ПО ТОЙ ЖЕ ТП ====================
-
-async def handle_continue_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка продолжения отправки уведомлений по той же ТП"""
-    user_id = str(update.effective_user.id)
-    text = update.message.text
-    
-    # Специальные кнопки навигации
-    if text == '🔍 Вернуться к поиску':
-        # Возвращаемся к результатам последнего поиска
-        tp_name = user_states[user_id].get('last_search_tp', '')
-        search_results = user_states[user_id].get('search_results_data', [])
-        
-        user_states[user_id]['state'] = 'search_tp'
-        user_states[user_id]['action'] = 'after_results'
-        
-        # Показываем результаты поиска снова
-        if search_results and tp_name:
-            await show_tp_results(update, search_results, tp_name)
-        else:
-            await update.message.reply_text(
-                "Вернулись к поиску",
-                reply_markup=get_after_search_keyboard(tp_name)
-            )
-        return
-        
-    elif text == '📋 В главное меню':
-        # Очищаем все временные данные
-        user_states[user_id] = {'state': 'main'}
-        permissions = get_user_permissions(user_id)
-        
-        await update.message.reply_text(
-            "Главное меню",
-            reply_markup=get_main_keyboard(permissions)
-        )
-        return
-    
-    # Обработка выбора ВЛ для продолжения
-    selected_tp = user_states[user_id].get('continue_tp')
-    sent_vls = user_states[user_id].get('sent_vls', [])
-    
-    # Проверяем что выбрана новая ВЛ (не из уже отправленных)
-    if text in sent_vls:
-        await update.message.reply_text(
-            f"⚠️ По ВЛ '{text}' уже было отправлено уведомление.\n"
-            "Выберите другую ВЛ."
-        )
-        return
-    
-    # Сохраняем выбранную ВЛ
-    user_states[user_id]['selected_vl'] = text
-    user_states[user_id]['action'] = 'send_location'
-    
-    # Добавляем в список отправленных
-    sent_vls.append(text)
-    user_states[user_id]['sent_vls'] = sent_vls
-    
-    keyboard = [[KeyboardButton("📍 Отправить местоположение", request_location=True)]]
-    keyboard.append(['⬅️ Назад'])
-    
-    await update.message.reply_text(
-        f"✅ Выбрана ВЛ: {text}\n"
-        f"📍 ТП: {selected_tp}\n"
-        f"📊 Это {len(sent_vls)}-е уведомление по данной ТП\n\n"
-        "Теперь отправьте ваше местоположение:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
-
-# ==================== ФУНКЦИЯ ОБРАБОТКИ НАЗАД В ПРОЦЕССЕ УВЕДОМЛЕНИЯ ====================
-
-async def handle_back_in_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопки Назад в процессе отправки уведомления"""
-    user_id = str(update.effective_user.id)
-    action = user_states[user_id].get('action')
-    
-    if action == 'send_location':
-        # Возвращаемся к выбору ВЛ
-        selected_tp = user_states[user_id].get('selected_tp')
-        branch = user_states[user_id].get('branch')
-        network = user_states[user_id].get('network')
-        
-        # Проверяем откуда пришли
-        from_search = user_states[user_id].get('from_search', False)
-        continue_tp = user_states[user_id].get('continue_tp')
-        sent_vls = user_states[user_id].get('sent_vls', [])
-        
-        if continue_tp and sent_vls:
-            # Если в режиме продолжения - показываем оставшиеся ВЛ
-            user_states[user_id]['action'] = 'continue_same_tp'
-            
-            # Убираем последнюю добавленную ВЛ из списка отправленных
-            if sent_vls:
-                sent_vls.pop()
-                user_states[user_id]['sent_vls'] = sent_vls
-            
-            # Перезагружаем список ВЛ
-            env_key = get_env_key_for_branch(branch, network, is_reference=True)
-            csv_url = os.environ.get(env_key)
-            
-            if csv_url:
-                data = load_csv_from_url(csv_url)
-                results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
-                
-                # Фильтруем по РЭС
-                user_permissions = get_user_permissions(user_id)
-                user_res = user_permissions.get('res')
-                if user_res and user_res != 'All':
-                    results = [r for r in results if r.get('РЭС', '').strip() == user_res]
-                
-                if results:
-                    vl_list = list(set([r['Наименование ВЛ'] for r in results]))
-                    
-                    # Убираем уже отправленные ВЛ
-                    available_vls = [vl for vl in vl_list if vl not in sent_vls]
-                    
-                    if available_vls:
-                        keyboard = []
-                        for vl in sorted(available_vls):
-                            keyboard.append([vl])
-                        keyboard.append(['🔍 Вернуться к поиску'])
-                        keyboard.append(['📋 В главное меню'])
-                        
-                        sent_info = ""
-                        if sent_vls:
-                            sent_info = f"\n✅ Уже отправлено по: {', '.join(sent_vls)}"
-                        
-                        await update.message.reply_text(
-                            f"📍 ТП: {selected_tp}{sent_info}\n\n"
-                            f"Выберите ВЛ для уведомления:",
-                            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                        )
-                        return
-        
-        # Стандартная логика возврата к выбору ВЛ
-        user_states[user_id]['action'] = 'select_vl'
-        
-        # Загружаем список ВЛ
-        env_key = get_env_key_for_branch(branch, network, is_reference=True)
-        csv_url = os.environ.get(env_key)
-        
-        if csv_url:
-            data = load_csv_from_url(csv_url)
-            results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
-            
-            # Фильтруем по РЭС
-            user_permissions = get_user_permissions(user_id)
-            user_res = user_permissions.get('res')
-            if user_res and user_res != 'All':
-                results = [r for r in results if r.get('РЭС', '').strip() == user_res]
-            
-            if results:
-                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
-                keyboard = []
-                for vl in sorted(vl_list):
-                    keyboard.append([vl])
-                keyboard.append(['🔍 Новый поиск'])
-                keyboard.append(['⬅️ Назад'])
-                
-                await update.message.reply_text(
-                    f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
-                    f"Выберите ВЛ:",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                )
-    
-    elif action == 'request_photo':
-        # Возвращаемся к отправке локации
-        user_states[user_id]['action'] = 'send_location'
-        keyboard = [[KeyboardButton("📍 Отправить местоположение", request_location=True)]]
-        keyboard.append(['⬅️ Назад'])
-        
-        selected_tp = user_states[user_id].get('selected_tp')
-        selected_vl = user_states[user_id].get('selected_vl')
-        
-        await update.message.reply_text(
-            f"✅ Выбрана ВЛ: {selected_vl}\n"
-            f"📍 ТП: {selected_tp}\n\n"
-            "Теперь отправьте ваше местоположение:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-    
-    elif action == 'add_comment':
-        # Возвращаемся к запросу фото
-        user_states[user_id]['action'] = 'request_photo'
-        keyboard = [
-            ['⏭ Пропустить и добавить комментарий'],
-            ['📤 Отправить без фото и комментария'],
-            ['⬅️ Назад']
-        ]
-        
-        selected_tp = user_states[user_id].get('selected_tp')
-        selected_vl = user_states[user_id].get('selected_vl')
-        
-        await update.message.reply_text(
-            f"📍 ТП: {selected_tp}\n"
-            f"⚡ ВЛ: {selected_vl}\n\n"
-            "📸 Сделайте фото бездоговорного ВОЛС\n\n"
-            "Как отправить фото:\n"
-            "📱 **Мобильный**: нажмите 📎 → Камера\n"
-            "Или выберите действие ниже:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode='Markdown'
-        )
-
-# ==================== ГЕНЕРАЦИЯ ОТЧЕТОВ ====================
+    # ==================== ГЕНЕРАЦИЯ ОТЧЕТОВ ====================
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
     """Генерация отчета"""
@@ -2245,7 +1911,8 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text,
         reply_markup=get_main_keyboard(get_user_permissions(user_id))
     )
-    # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+
+# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
@@ -2308,68 +1975,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_broadcast(update, context)
         return
     
-    # Обработка выбора ТП из справочника после неточного поиска
-    elif state == 'send_notification' and action == 'select_reference_tp':
-        if text == '❌ Отмена':
-            # Возвращаемся к результатам поиска
-            tp_name = user_states[user_id].get('last_search_tp', '')
-            user_states[user_id]['state'] = 'search_tp'
-            user_states[user_id]['action'] = 'after_results'
-            
-            await update.message.reply_text(
-                "Отменено. Вернулись к результатам поиска.",
-                reply_markup=get_after_search_keyboard(tp_name)
-            )
-            return
-        
-        # Пользователь выбрал ТП из справочника
-        reference_data = user_states[user_id].get('reference_data', [])
-        selected_results = [r for r in reference_data if r.get('Наименование ТП') == text]
-        
-        if not selected_results:
-            await update.message.reply_text("❌ Ошибка выбора ТП. Попробуйте еще раз.")
-            return
-        
-        # Сохраняем выбранную ТП
-        tp_data = selected_results[0]
-        selected_tp = tp_data.get('Наименование ТП')
-        
-        user_states[user_id]['selected_tp'] = selected_tp
-        user_states[user_id]['tp_data'] = tp_data
-        user_states[user_id]['action'] = 'select_vl'
-        user_states[user_id]['from_search'] = True  # Флаг что пришли из поиска
-        
-        # Фильтруем по РЭС если нужно
-        user_permissions = get_user_permissions(user_id)
-        user_res = user_permissions.get('res')
-        if user_res and user_res != 'All':
-            selected_results = [r for r in selected_results if r.get('РЭС', '').strip() == user_res]
-        
-        # Получаем список ВЛ
-        vl_list = list(set([r['Наименование ВЛ'] for r in selected_results]))
-        
-        keyboard = []
-        for vl in sorted(vl_list):
-            keyboard.append([vl])
-        keyboard.append(['🔍 Новый поиск'])
-        keyboard.append(['⬅️ Назад'])
-        
-        await update.message.reply_text(
-            f"✅ Выбрана ТП из справочника!\n\n"
-            f"📨 Отправка уведомления по ТП: {selected_tp}\n"
-            f"📍 РЭС: {tp_data.get('РЭС', '-')}\n\n"
-            f"Выберите ВЛ для уведомления:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-    
-    # Обработка продолжения отправки по той же ТП
-    elif state == 'send_notification' and action == 'continue_same_tp':
-        await handle_continue_notification(update, context)
-    
-    # Обработка кнопки отправки уведомления из результатов поиска
-    elif state == 'search_tp' and text.startswith('📨 Отправить уведомление'):
-        await handle_notification_from_search(update, context)
-    
     # Обработка кнопки Назад
     if text == '⬅️ Назад':
         if state in ['rosseti_kuban', 'rosseti_yug', 'reports', 'phones', 'settings', 'broadcast_message', 'broadcast_choice', 'admin']:
@@ -2415,41 +2020,122 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             branch = user_states[user_id].get('branch')
             action = user_states[user_id].get('action')
             
-            if state == 'send_notification':
-                # Если мы в режиме продолжения отправки по той же ТП
-                if action == 'continue_same_tp':
-                    # Возвращаемся к результатам поиска
-                    tp_name = user_states[user_id].get('last_search_tp', '')
-                    search_results = user_states[user_id].get('search_results_data', [])
-                    
-                    user_states[user_id]['state'] = 'search_tp'
-                    user_states[user_id]['action'] = 'after_results'
-                    
-                    if search_results and tp_name:
-                        await show_tp_results(update, search_results, tp_name)
-                    else:
-                        await update.message.reply_text(
-                            "Вернулись к результатам поиска",
-                            reply_markup=get_after_search_keyboard(tp_name)
-                        )
-                    return
-                
-                # Существующая логика для обычной отправки уведомления
-                elif 'last_search_tp' in user_states[user_id] or user_states[user_id].get('from_search'):
-                    if action in ['select_vl', 'send_location', 'request_photo', 'add_comment']:
-                        await handle_back_in_notification(update, context)
-                        return
-            
             # Для search_tp с action 'after_results' (после показа результатов)
-            elif state == 'search_tp' and action == 'after_results':
+            if state == 'search_tp' and action == 'after_results':
                 user_states[user_id]['state'] = f'branch_{branch}'
                 user_states[user_id]['action'] = None
                 await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
                 return
             
-            # Стандартный возврат в меню филиала
-            user_states[user_id]['state'] = f'branch_{branch}'
-            await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
+            # Для search_tp с action 'search' (в процессе поиска)
+            elif state == 'search_tp' and action == 'search':
+                user_states[user_id]['state'] = f'branch_{branch}'
+                user_states[user_id]['action'] = None
+                await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
+                return
+            
+            # Для send_notification применяем существующую логику
+            elif state == 'send_notification':
+                action = user_states[user_id].get('action')
+                
+                # Если мы в процессе отправки уведомления, пришедшего из поиска
+                if 'last_search_tp' in user_states[user_id]:
+                    if action == 'select_vl':
+                        # Возвращаемся к результатам поиска
+                        user_states[user_id]['state'] = 'search_tp'
+                        user_states[user_id]['action'] = 'after_results'
+                        tp_name = user_states[user_id].get('last_search_tp', '')
+                        await update.message.reply_text(
+                            "Вернулись к результатам поиска",
+                            reply_markup=get_after_search_keyboard(tp_name)
+                        )
+                    elif action in ['send_location', 'request_photo', 'add_comment']:
+                        # Возвращаемся на шаг назад в процессе уведомления
+                        if action == 'send_location':
+                            # Возвращаемся к выбору ВЛ
+                            user_states[user_id]['action'] = 'select_vl'
+                            selected_tp = user_states[user_id].get('selected_tp')
+                            
+                            # Перезагружаем данные из справочника для получения списка ВЛ
+                            branch = user_states[user_id].get('branch')
+                            network = user_states[user_id].get('network')
+                            
+                            # Проверяем права пользователя
+                            user_permissions = get_user_permissions(user_id)
+                            user_branch = user_permissions.get('branch')
+                            if user_branch and user_branch != 'All':
+                                branch = user_branch
+                            
+                            env_key = get_env_key_for_branch(branch, network, is_reference=True)
+                            csv_url = os.environ.get(env_key)
+                            
+                            if csv_url:
+                                data = load_csv_from_url(csv_url)
+                                results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+                                
+                                # Фильтруем по РЭС если нужно
+                                user_res = user_permissions.get('res')
+                                if user_res and user_res != 'All':
+                                    results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+                                
+                                if results:
+                                    vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                                    keyboard = []
+                                    for vl in vl_list:
+                                        keyboard.append([vl])
+                                    keyboard.append(['🔍 Новый поиск'])
+                                    keyboard.append(['⬅️ Назад'])
+                                    
+                                    await update.message.reply_text(
+                                        f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                                        f"Выберите ВЛ:",
+                                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                                    )
+                                else:
+                                    await update.message.reply_text("❌ Не удалось загрузить список ВЛ")
+                            else:
+                                await update.message.reply_text("❌ Справочник не найден")
+                        elif action == 'request_photo':
+                            # Возвращаемся к отправке локации
+                            user_states[user_id]['action'] = 'send_location'
+                            keyboard = [[KeyboardButton("📍 Отправить местоположение", request_location=True)]]
+                            keyboard.append(['⬅️ Назад'])
+                            
+                            selected_tp = user_states[user_id].get('selected_tp')
+                            selected_vl = user_states[user_id].get('selected_vl')
+                            
+                            await update.message.reply_text(
+                                f"✅ Выбрана ВЛ: {selected_vl}\n"
+                                f"📍 ТП: {selected_tp}\n\n"
+                                "Теперь отправьте ваше местоположение:",
+                                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                            )
+                        elif action == 'add_comment':
+                            # Возвращаемся к запросу фото
+                            user_states[user_id]['action'] = 'request_photo'
+                            keyboard = [
+                                ['⏭ Пропустить и добавить комментарий'],
+                                ['📤 Отправить без фото и комментария'],
+                                ['⬅️ Назад']
+                            ]
+                            
+                            selected_tp = user_states[user_id].get('selected_tp')
+                            selected_vl = user_states[user_id].get('selected_vl')
+                            
+                            await update.message.reply_text(
+                                f"📍 ТП: {selected_tp}\n"
+                                f"⚡ ВЛ: {selected_vl}\n\n"
+                                "📸 Сделайте фото бездоговорного ВОЛС\n\n"
+                                "Как отправить фото:\n"
+                                "📱 **Мобильный**: нажмите 📎 → Камера\n"
+                                "Или выберите действие ниже:",
+                                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+                                parse_mode='Markdown'
+                            )
+                else:
+                    # Если пришли не из поиска - возвращаемся в меню филиала
+                    user_states[user_id]['state'] = f'branch_{branch}'
+                    await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
         return
     
     # Главное меню
@@ -2643,19 +2329,101 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🔍 Введите наименование ТП для поиска:",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
+        # 🔴 ИЗМЕНЕНИЕ 4 - ДОБАВЛЯЕМ ОБРАБОТКУ КНОПКИ ОТПРАВКИ УВЕДОМЛЕНИЯ
+        elif text.startswith('📨 Отправить уведомление'):
+            logger.info(f"Обработка кнопки отправки уведомления: '{text}'")
+            # Переход к отправке уведомления с уже найденной ТП
+            if 'last_search_tp' in user_states[user_id]:
+                selected_tp = user_states[user_id]['last_search_tp']
+                branch = user_states[user_id].get('branch')
+                network = user_states[user_id].get('network')
+                
+                logger.info(f"Найдена сохраненная ТП: {selected_tp}")
+                logger.info(f"Branch: {branch}, Network: {network}")
+                
+                # Проверяем права пользователя - может у него указан конкретный филиал
+                user_permissions = get_user_permissions(user_id)
+                user_branch = user_permissions.get('branch')
+                
+                # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
+                if user_branch and user_branch != 'All':
+                    branch = user_branch  # Используем как есть из прав (например "Сочинский")
+                    logger.info(f"Используем филиал из прав пользователя для отправки уведомления БЕЗ изменений: {branch}")
+                
+                # Загружаем справочник для поиска ВЛ
+                env_key = get_env_key_for_branch(branch, network, is_reference=True)
+                csv_url = os.environ.get(env_key)
+                
+                if not csv_url:
+                    await update.message.reply_text(f"❌ Справочник для филиала {branch} не найден")
+                    return
+                
+                loading_msg = await update.message.reply_text("🔍 Загружаю данные из справочника...")
+                
+                data = load_csv_from_url(csv_url)
+                results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+                
+                # Фильтруем по РЭС если у пользователя ограничения
+                user_res = user_permissions.get('res')
+                
+                if user_res and user_res != 'All':
+                    results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+                
+                await loading_msg.delete()
+                
+                if not results:
+                    await update.message.reply_text("❌ ТП не найдена в справочнике")
+                    return
+                
+                # Переходим сразу к выбору ВЛ
+                user_states[user_id]['state'] = 'send_notification'
+                user_states[user_id]['action'] = 'select_vl'
+                user_states[user_id]['selected_tp'] = selected_tp
+                user_states[user_id]['tp_data'] = results[0]
+                user_states[user_id]['branch'] = branch  # Сохраняем branch
+                user_states[user_id]['network'] = network  # Сохраняем network
+                
+                logger.info(f"Сохранены данные для уведомления:")
+                logger.info(f"  selected_tp: {selected_tp}")
+                logger.info(f"  tp_data: {results[0]}")
+                logger.info(f"  branch: {branch}")
+                logger.info(f"  network: {network}")
+                
+                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                
+                keyboard = []
+                for vl in vl_list:
+                    keyboard.append([vl])
+                keyboard.append(['🔍 Новый поиск'])
+                keyboard.append(['⬅️ Назад'])
+                
+                await update.message.reply_text(
+                    f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                    f"Выберите ВЛ:",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+            else:
+                await update.message.reply_text("❌ Сначала выполните поиск ТП")
         elif user_states[user_id].get('action') == 'search':
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
             
-            # Проверяем права пользователя
+            # Проверяем права пользователя - может у него указан конкретный филиал
             user_permissions = get_user_permissions(user_id)
             user_branch = user_permissions.get('branch')
             user_res = user_permissions.get('res')
             
-            # Если у пользователя указан конкретный филиал в правах - используем его
+            # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
             if user_branch and user_branch != 'All':
-                branch = user_branch
-                logger.info(f"Используем филиал из прав пользователя: {branch}")
+                branch = user_branch  # Используем как есть из прав (например "Сочинский")
+                logger.info(f"Используем филиал из прав пользователя БЕЗ изменений: {branch}")
+            else:
+                # Только если выбрали из меню - нормализуем
+                branch = normalize_branch_name(branch)
+            
+            logger.info(f"Поиск ТП для филиала: {branch}, сеть: {network}")
+            if user_res and user_res != 'All':
+                logger.info(f"Пользователь имеет доступ только к РЭС: {user_res}")
             
             search_messages = [
                 "🔍 Ищу информацию...",
@@ -2676,23 +2444,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             env_key = get_env_key_for_branch(branch, network)
             csv_url = os.environ.get(env_key)
             
+            logger.info(f"Итоговые параметры поиска:")
+            logger.info(f"  Филиал: {branch}")
+            logger.info(f"  Сеть: {network}")
+            logger.info(f"  Ключ переменной: {env_key}")
+            logger.info(f"  URL из переменной: {csv_url}")
+            
             if not csv_url:
+                available_vars = [key for key in os.environ.keys() if 'URL' in key and network in key]
+                logger.error(f"Доступные переменные для {network}: {available_vars}")
                 await loading_msg.delete()
                 await update.message.reply_text(
-                    f"❌ Данные для филиала {branch} не найдены"
+                    f"❌ Данные для филиала {branch} не найдены\n"
+                    f"Искали переменную: {env_key}\n"
+                    f"Доступные: {', '.join(available_vars[:5])}"
                 )
                 return
             
             data = load_csv_from_url(csv_url)
             results = search_tp_in_data(text, data, 'Наименование ТП')
             
-            # Фильтруем по РЭС если у пользователя ограничения
+            # Если у пользователя указан конкретный РЭС - фильтруем результаты
             if user_res and user_res != 'All':
                 filtered_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
                 
                 await loading_msg.delete()
                 
                 if not filtered_results:
+                    # Проверяем, были ли вообще результаты до фильтрации
                     if results:
                         await update.message.reply_text(
                             f"❌ В {user_res} РЭС запрашиваемая ТП не найдена.\n\n"
@@ -2718,11 +2497,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(tp_list) == 1:
                 # Если найдена только одна ТП, сразу показываем результаты
                 await show_tp_results(update, results, tp_list[0])
+                # Устанавливаем action для корректной работы кнопок
                 user_states[user_id]['action'] = 'after_results'
             else:
-                # Показываем ВСЕ найденные ТП
+                # Показываем ВСЕ найденные ТП без ограничения
                 keyboard = []
-                for tp in tp_list:
+                for tp in tp_list:  # Убрали [:10] - показываем все
                     keyboard.append([tp])
                 keyboard.append(['⬅️ Назад'])
                 
@@ -2741,26 +2521,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if filtered_results:
                 await show_tp_results(update, filtered_results, text)
                 user_states[user_id]['action'] = 'after_results'
-    
+        
     # Уведомление - поиск ТП
     elif state == 'send_notification' and user_states[user_id].get('action') == 'notification_tp':
         branch = user_states[user_id].get('branch')
         network = user_states[user_id].get('network')
         
-        # Проверяем права пользователя
+        # Проверяем права пользователя - может у него указан конкретный филиал
         user_permissions = get_user_permissions(user_id)
         user_branch = user_permissions.get('branch')
         user_res = user_permissions.get('res')
         
-        # Если у пользователя указан конкретный филиал в правах - используем его
+        # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
         if user_branch and user_branch != 'All':
-            branch = user_branch
+            branch = user_branch  # Используем как есть из прав (например "Сочинский")
+            logger.info(f"Используем филиал из прав пользователя для уведомления БЕЗ изменений: {branch}")
         
         notification_messages = [
             "🔍 Поиск в справочнике...",
             "📋 Проверяю базу данных...",
             "🌐 Загружаю информацию...",
-        ]
+            ]
         
         loading_msg = await update.message.reply_text(notification_messages[0])
         
@@ -2774,6 +2555,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         env_key = get_env_key_for_branch(branch, network, is_reference=True)
         csv_url = os.environ.get(env_key)
         
+        logger.info(f"Загрузка справочника для уведомления:")
+        logger.info(f"  Филиал: {branch}")
+        logger.info(f"  Сеть: {network}")
+        logger.info(f"  Ключ переменной: {env_key}")
+        logger.info(f"  URL справочника: {csv_url}")
+        
         if not csv_url:
             await loading_msg.delete()
             await update.message.reply_text(f"❌ Справочник для филиала {branch} не найден")
@@ -2782,7 +2569,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = load_csv_from_url(csv_url)
         results = search_tp_in_data(text, data, 'Наименование ТП')
         
-        # Фильтруем по РЭС если у пользователя ограничения
+        # Если у пользователя указан конкретный РЭС - фильтруем результаты
         if user_res and user_res != 'All':
             filtered_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
             
@@ -2813,7 +2600,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tp_list = list(set([r['Наименование ТП'] for r in results]))
         
         keyboard = []
-        for tp in tp_list:
+        for tp in tp_list:  # Показываем ВСЕ найденные ТП
             keyboard.append([tp])
         keyboard.append(['⬅️ Назад'])
         
@@ -2859,21 +2646,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Очищаем данные предыдущего поиска
             if 'last_search_tp' in user_states[user_id]:
                 del user_states[user_id]['last_search_tp']
-            if 'from_search' in user_states[user_id]:
-                del user_states[user_id]['from_search']
-            if 'continue_tp' in user_states[user_id]:
-                del user_states[user_id]['continue_tp']
-            if 'sent_vls' in user_states[user_id]:
-                del user_states[user_id]['sent_vls']
-            
             keyboard = [['⬅️ Назад']]
             await update.message.reply_text(
                 "🔍 Введите наименование ТП для поиска:",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
             return
-        
-        # Сохраняем выбранную ВЛ
+            
         user_states[user_id]['selected_vl'] = text
         user_states[user_id]['action'] = 'send_location'
         
@@ -2883,20 +2662,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_tp = user_states[user_id].get('selected_tp', '')
         selected_vl = text
         
-        # Проверяем режим продолжения
-        sent_vls = user_states[user_id].get('sent_vls', [])
-        if sent_vls:
-            info_text = f"✅ Выбрана ВЛ: {selected_vl}\n"
-            info_text += f"📍 ТП: {selected_tp}\n"
-            info_text += f"📊 Это {len(sent_vls) + 1}-е уведомление по данной ТП\n\n"
-            info_text += "Теперь отправьте ваше местоположение:"
-        else:
-            info_text = f"✅ Выбрана ВЛ: {selected_vl}\n"
-            info_text += f"📍 ТП: {selected_tp}\n\n"
-            info_text += "Теперь отправьте ваше местоположение:"
-        
         await update.message.reply_text(
-            info_text,
+            f"✅ Выбрана ВЛ: {selected_vl}\n"
+            f"📍 ТП: {selected_tp}\n\n"
+            "Теперь отправьте ваше местоположение:",
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
     
@@ -3367,32 +3136,36 @@ async def refresh_documents_cache():
                 except Exception as e:
                     logger.error(f"❌ Ошибка обновления кэша {doc_name}: {e}")
 
-# ==================== НАСТРОЙКА И ЗАПУСК С ВЕБХУКОМ ====================
+# ==================== НАСТРОЙКА ВЕБХУКА ====================
 
-async def post_init(application: Application) -> None:
-    """Инициализация после запуска приложения"""
-    logger.info("🚀 Инициализация бота...")
-    
-    # Предзагрузка данных
-    await preload_documents()
-    await preload_csv_files()
-    
-    # Запуск фоновых задач
-    asyncio.create_task(refresh_documents_cache())
-    asyncio.create_task(refresh_users_data())
-    asyncio.create_task(save_bot_users_periodically())
-    
-    logger.info("✅ Инициализация завершена")
+async def setup_webhook(application: Application, webhook_url: str):
+    """Настройка вебхука"""
+    try:
+        # Удаляем старый вебхук
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        
+        # Устанавливаем новый
+        success = await application.bot.set_webhook(
+            url=webhook_url,
+            allowed_updates=Update.ALL_TYPES
+        )
+        
+        if success:
+            logger.info(f"✅ Вебхук установлен: {webhook_url}")
+            
+            # Проверяем информацию о вебхуке
+            webhook_info = await application.bot.get_webhook_info()
+            logger.info(f"📌 Webhook URL: {webhook_info.url}")
+            logger.info(f"📌 Pending updates: {webhook_info.pending_update_count}")
+        else:
+            logger.error("❌ Не удалось установить вебхук")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка настройки вебхука: {e}")
 
-async def post_shutdown(application: Application) -> None:
-    """Действия при остановке приложения"""
-    logger.info("🛑 Остановка бота...")
-    save_bot_users()
-    logger.info("✅ Данные сохранены")
+# ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
 
-def main():
-    """Главная функция запуска бота"""
-    # Обработчики сигналов
+if __name__ == '__main__':
     def signal_handler(sig, frame):
         logger.info("Получен сигнал остановки, сохраняем данные...")
         save_bot_users()
@@ -3401,25 +3174,17 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Проверка переменных окружения
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN не задан в переменных окружения!")
+        logger.error("BOT_TOKEN не задан в переменных окружения!")
         exit(1)
-    
+        
     if not ZONES_CSV_URL:
-        logger.error("❌ ZONES_CSV_URL не задан в переменных окружения!")
+        logger.error("ZONES_CSV_URL не задан в переменных окружения!")
         exit(1)
     
-    logger.info(f"🤖 ВОЛС Ассистент v{BOT_VERSION}")
-    logger.info(f"📅 Дата запуска: {get_moscow_time().strftime('%d.%m.%Y %H:%M')} МСК")
-    
-    # Создание приложения
-    logger.info("🔨 Создаем приложение...")
     application = Application.builder().token(BOT_TOKEN).build()
-    logger.info("✅ Приложение создано")
     
-    # Регистрация обработчиков
-    logger.info("📝 Регистрируем обработчики...")
+    # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("reload", reload_users))
@@ -3428,48 +3193,39 @@ def main():
     application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_error_handler(error_handler)
-    logger.info("✅ Обработчики зарегистрированы")
     
-    # Загрузка начальных данных
-    logger.info("📥 Загрузка начальных данных...")
-    try:
-        load_users_data()
-        logger.info("✅ Данные пользователей загружены")
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки пользователей: {e}")
+    # Загружаем данные
+    load_users_data()
+    load_bot_users()
     
-    try:
-        load_bot_users()
-        logger.info("✅ Данные о запусках бота загружены")
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки bot_users: {e}")
+    async def post_init(application: Application) -> None:
+        """Вызывается после инициализации приложения"""
+        await preload_documents()
+        await preload_csv_files()
+        
+        asyncio.create_task(refresh_documents_cache())
+        asyncio.create_task(refresh_users_data())
+        asyncio.create_task(save_bot_users_periodically())
     
-    # Установка функций инициализации
+    async def post_shutdown(application: Application) -> None:
+        """Вызывается при остановке приложения"""
+        logger.info("Сохраняем данные перед остановкой...")
+        save_bot_users()
+    
     application.post_init = post_init
-    application.post_shutdown = post_shutdown
+    if hasattr(application, 'post_shutdown'):
+        application.post_shutdown = post_shutdown
     
     # Запуск бота
     if WEBHOOK_URL:
-        logger.info(f"🌐 Запуск в режиме вебхука")
-        logger.info(f"🔗 Webhook URL: {WEBHOOK_URL}")
-        logger.info(f"🚪 Порт: {PORT}")
-        logger.info("🚀 Запускаем вебхук...")
-        
-        # Запуск с вебхуком
+        logger.info(f"🌐 Запуск в режиме вебхука: {WEBHOOK_URL}")
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path=BOT_TOKEN,
             webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
-            allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
     else:
         logger.info("🤖 Запуск в режиме polling...")
-        logger.warning("⚠️ Для production рекомендуется использовать webhook!")
-        
-        # Запуск polling
-        application.run_polling(
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        application.run_polling(drop_pending_updates=True)
