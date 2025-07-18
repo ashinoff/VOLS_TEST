@@ -3441,43 +3441,21 @@ def main():
         logger.info(f"🔗 Webhook URL: {WEBHOOK_URL}")
         logger.info(f"🚪 Порт: {PORT}")
         
-        # Запуск с вебхуком
+        # Запуск с вебхуком (убрал лишние параметры)
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path=BOT_TOKEN,
             webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            # Дополнительные параметры для стабильности
-            pool_timeout=60,
-            connect_timeout=60,
-            read_timeout=60,
-            write_timeout=60
+            drop_pending_updates=True
         )
     else:
         logger.info("🤖 Запуск в режиме polling...")
         logger.warning("⚠️ Для production рекомендуется использовать webhook!")
         
-        # Запуск polling с оптимальными параметрами
+        # Запуск polling (тоже убрал лишние параметры)
         application.run_polling(
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,
-            poll_interval=0.5,
-            timeout=30,
-            read_timeout=30,
-            write_timeout=30,
-            connect_timeout=30,
-            pool_timeout=30
+            allowed_updates=Update.ALL_TYPES
         )
-
-# ==================== ТОЧКА ВХОДА ====================
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.info("⏹️ Бот остановлен пользователем")
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
-        exit(1)
