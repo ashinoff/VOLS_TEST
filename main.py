@@ -3414,9 +3414,12 @@ def main():
     logger.info(f"📅 Дата запуска: {get_moscow_time().strftime('%d.%m.%Y %H:%M')} МСК")
     
     # Создание приложения
+    logger.info("🔨 Создаем приложение...")
     application = Application.builder().token(BOT_TOKEN).build()
+    logger.info("✅ Приложение создано")
     
     # Регистрация обработчиков
+    logger.info("📝 Регистрируем обработчики...")
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("reload", reload_users))
@@ -3425,11 +3428,21 @@ def main():
     application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_error_handler(error_handler)
+    logger.info("✅ Обработчики зарегистрированы")
     
     # Загрузка начальных данных
     logger.info("📥 Загрузка начальных данных...")
-    load_users_data()
-    load_bot_users()
+    try:
+        load_users_data()
+        logger.info("✅ Данные пользователей загружены")
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки пользователей: {e}")
+    
+    try:
+        load_bot_users()
+        logger.info("✅ Данные о запусках бота загружены")
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки bot_users: {e}")
     
     # Установка функций инициализации
     application.post_init = post_init
@@ -3440,8 +3453,9 @@ def main():
         logger.info(f"🌐 Запуск в режиме вебхука")
         logger.info(f"🔗 Webhook URL: {WEBHOOK_URL}")
         logger.info(f"🚪 Порт: {PORT}")
+        logger.info("🚀 Запускаем вебхук...")
         
-        # Запуск с вебхуком (убрал лишние параметры)
+        # Запуск с вебхуком
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
@@ -3454,7 +3468,7 @@ def main():
         logger.info("🤖 Запуск в режиме polling...")
         logger.warning("⚠️ Для production рекомендуется использовать webhook!")
         
-        # Запуск polling (тоже убрал лишние параметры)
+        # Запуск polling
         application.run_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
