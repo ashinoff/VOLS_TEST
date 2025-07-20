@@ -217,6 +217,50 @@ def search_tp_in_data(tp_query: str, data: List[Dict], column: str) -> List[Dict
     """Поиск ТП в данных (использует улучшенную версию)"""
     return search_tp_in_data_advanced(tp_query, data, column)
 
+# Новая функция для двойного поиска
+async def search_tp_in_both_catalogs(tp_query: str, branch: str, network: str, user_res: str = None) -> Dict:
+    """Поиск ТП одновременно в реестре договоров и структуре сети"""
+    result = {
+        'registry': [],  # Результаты из реестра договоров
+        'structure': [],  # Результаты из структуры сети
+        'registry_tp_names': [],  # Уникальные названия ТП из реестра
+        'structure_tp_names': []  # Уникальные названия ТП из структуры
+    }
+    
+    # Поиск в реестре договоров (без SP)
+    registry_env_key = get_env_key_for_branch(branch, network, is_reference=False)
+    registry_url = os.environ.get(registry_env_key)
+    
+    if registry_url:
+        logger.info(f"Поиск в реестре договоров: {registry_env_key}")
+        registry_data = await load_csv_from_url_async(registry_url)
+        registry_results = search_tp_in_data(tp_query, registry_data, 'Наименование ТП')
+        
+        # Фильтруем по РЭС если нужно
+        if user_res and user_res != 'All':
+            registry_results = [r for r in registry_results if r.get('РЭС', '').strip() == user_res]
+        
+        result['registry'] = registry_results
+        result['registry_tp_names'] = list(set([r['Наименование ТП'] for r in registry_results]))
+    
+    # Поиск в структуре сети (с SP)
+    structure_env_key = get_env_key_for_branch(branch, network, is_reference=True)
+    structure_url = os.environ.get(structure_env_key)
+    
+    if structure_url:
+        logger.info(f"Поиск в структуре сети: {structure_env_key}")
+        structure_data = await load_csv_from_url_async(structure_url)
+        structure_results = search_tp_in_data(tp_query, structure_data, 'Наименование ТП')
+        
+        # Фильтруем по РЭС если нужно
+        if user_res and user_res != 'All':
+            structure_results = [r for r in structure_results if r.get('РЭС', '').strip() == user_res]
+        
+        result['structure'] = structure_results
+        result['structure_tp_names'] = list(set([r['Наименование ТП'] for r in structure_results]))
+    
+    return result
+
 # ==================== АСИНХРОННАЯ ЗАГРУЗКА CSV ====================
 
 async def load_csv_from_url_async(url: str) -> List[Dict]:
@@ -264,8 +308,7 @@ async def load_csv_from_url_async(url: str) -> List[Dict]:
         if url in csv_cache:
             return csv_cache[url]
         return []
-
-# Синхронная версия для обратной совместимости (использует кэш если есть)
+        # Синхронная версия для обратной совместимости (использует кэш если есть)
 def load_csv_from_url(url: str) -> List[Dict]:
     """Загрузить CSV файл по URL (проверяет кэш)"""
     # Сначала проверяем кэш
@@ -401,7 +444,8 @@ def update_user_activity(user_id: str):
     if user_id not in user_activity:
         user_activity[user_id] = {'last_activity': get_moscow_time(), 'count': 0}
     user_activity[user_id]['last_activity'] = get_moscow_time()
-    # ==================== РАБОТА С ДОКУМЕНТАМИ ====================
+    
+# ==================== РАБОТА С ДОКУМЕНТАМИ ====================
 
 async def download_document(url: str) -> Optional[BytesIO]:
     """Скачать документ по URL (асинхронно)"""
@@ -646,8 +690,7 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     env_key = f"{branch_key}_URL{suffix}"
     logger.info(f"Итоговый ключ переменной окружения: {env_key}")
     return env_key
-
-# ==================== ФУНКЦИИ КЛАВИАТУР ====================
+    # ==================== ФУНКЦИИ КЛАВИАТУР ====================
 
 def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     """Получить главную клавиатуру в зависимости от прав"""
@@ -787,16 +830,20 @@ def get_document_action_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# 🔴 ИЗМЕНЕНИЕ 1 - ОБНОВЛЯЕМ ФУНКЦИЮ get_after_search_keyboard
-def get_after_search_keyboard(tp_name: str = None) -> ReplyKeyboardMarkup:
+def get_after_search_keyboard(tp_name: str = None, search_query: str = None) -> ReplyKeyboardMarkup:
     """Клавиатура после результатов поиска"""
     keyboard = [
         ['🔍 Новый поиск']
     ]
     
-    if tp_name:
-        # Обрезаем название ТП если слишком длинное для кнопки
-        display_tp = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
+    # Используем оригинальный поисковый запрос для кнопки уведомления
+    if search_query:
+        # Обрезаем запрос если слишком длинный для кнопки
+        display_query = search_query[:25] + '...' if len(search_query) > 25 else search_query
+        keyboard.append([f'📨 Отправить уведомление по "{display_query}"'])
+    elif tp_name:
+        # Fallback на название ТП если запрос не сохранен
+        display_tp = tp_name[:25] + '...' if len(tp_name) > 25 else tp_name
         keyboard.append([f'📨 Отправить уведомление по {display_tp}'])
     else:
         keyboard.append(['📨 Отправить уведомление'])
@@ -811,6 +858,65 @@ def get_report_action_keyboard() -> ReplyKeyboardMarkup:
         ['📧 Отправить себе на почту'],
         ['⬅️ Назад']
     ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# Новая клавиатура для двойного поиска
+def get_dual_search_keyboard(registry_tp_names: List[str], structure_tp_names: List[str]) -> ReplyKeyboardMarkup:
+    """Клавиатура с результатами поиска из двух справочников"""
+    keyboard = []
+    
+    # Заголовок для реестра договоров
+    if registry_tp_names:
+        keyboard.append(['📋 РЕЕСТР ДОГОВОРОВ:', '🗂️ СТРУКТУРА СЕТИ:'])
+    
+    # Определяем максимальное количество строк
+    max_rows = max(len(registry_tp_names), len(structure_tp_names))
+    
+    # Формируем строки с кнопками
+    for i in range(max_rows):
+        row = []
+        
+        # Кнопка из реестра договоров (слева)
+        if i < len(registry_tp_names):
+            tp_name = registry_tp_names[i]
+            # Обрезаем название если слишком длинное
+            display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
+            row.append(f'📄 {display_name}')
+        else:
+            row.append(' ')  # Пустая кнопка-заполнитель
+        
+        # Кнопка из структуры сети (справа)
+        if i < len(structure_tp_names):
+            tp_name = structure_tp_names[i]
+            # Обрезаем название если слишком длинное
+            display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
+            row.append(f'🔌 {display_name}')
+        else:
+            if i < len(registry_tp_names):
+                row.append(' ')  # Пустая кнопка-заполнитель
+        
+        if len(row) == 2:
+            keyboard.append(row)
+        elif len(row) == 1 and row[0] != ' ':
+            keyboard.append(row)
+    
+    # Кнопка назад
+    keyboard.append(['⬅️ Назад'])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# Клавиатура для показа всех результатов по ТП
+def get_all_tp_results_keyboard(has_more_results: bool = False) -> ReplyKeyboardMarkup:
+    """Клавиатура после показа всех результатов по ТП"""
+    keyboard = [
+        ['🔍 Новый поиск']
+    ]
+    
+    if has_more_results:
+        keyboard.append(['📜 Показать все результаты'])
+    
+    keyboard.append(['⬅️ Назад'])
+    
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ==================== EMAIL ФУНКЦИИ ====================
@@ -1006,7 +1112,6 @@ async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ОТПРАВКА УВЕДОМЛЕНИЙ ====================
 
-# 🔴 ИЗМЕНЕНИЕ 2 - ОБНОВЛЯЕМ ФУНКЦИЮ send_notification
 async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправить уведомление ответственным лицам"""
     user_id = str(update.effective_user.id)
@@ -1236,7 +1341,6 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[user_id]['photo_id'] = None
     user_states[user_id]['comment'] = ''
     
-    # 🔴 ДОБАВЛЯЕМ ЛОГИКУ ДЛЯ ПРОДОЛЖЕНИЯ
     # Если пришли из поиска - возвращаемся к выбору ВЛ
     if 'last_search_tp' in user_states[user_id]:
         user_states[user_id]['state'] = 'send_notification'
@@ -1282,9 +1386,8 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ПОКАЗ РЕЗУЛЬТАТОВ ПОИСКА ====================
 
-# 🔴 ИЗМЕНЕНИЕ 3 - ОБНОВЛЯЕМ ФУНКЦИЮ show_tp_results
-async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
-    """Показать результаты поиска по ТП с группировкой по ВЛ"""
+async def show_tp_results(update: Update, results: List[Dict], tp_name: str, search_query: str = None):
+    """Показать результаты поиска по ТП (БЕЗ ОГРАНИЧЕНИЯ НА КОЛИЧЕСТВО)"""
     if not results:
         await update.message.reply_text("❌ Результаты не найдены")
         return
@@ -1292,14 +1395,14 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
     # Сохраняем найденную ТП для возможности отправки уведомления
     user_id = str(update.effective_user.id)
     user_states[user_id]['last_search_tp'] = tp_name
-    user_states[user_id]['search_results_data'] = results  # Сохраняем все результаты
+    user_states[user_id]['last_search_query'] = search_query or tp_name  # Сохраняем оригинальный запрос
     user_states[user_id]['action'] = 'after_results'
     logger.info(f"[show_tp_results] Сохранена ТП для отправки уведомления: {tp_name}")
-    logger.info(f"[show_tp_results] Найдено результатов: {len(results)}")
+    logger.info(f"[show_tp_results] Сохранен поисковый запрос: {search_query}")
     
     res_name = results[0].get('РЭС', 'Неизвестный')
     
-    # Группируем результаты по ВЛ для подсчета
+    # Группируем результаты по ВЛ
     vl_groups = {}
     for result in results:
         vl = result.get('Наименование ВЛ', '-')
@@ -1307,70 +1410,79 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str):
             vl_groups[vl] = []
         vl_groups[vl].append(result)
     
-    # Подсчитываем общее количество уникальных записей и ВЛ
-    unique_vl_count = len(vl_groups)
-    total_records = len(results)
+    message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
     
-    message = f"📍 {res_name} РЭС, ТП {tp_name}\n"
-    message += f"✅ Найдено: {unique_vl_count} ВЛ, {total_records} записей с договорами аренды\n\n"
-    
-    # Показываем все результаты
-    for vl_name, vl_results in vl_groups.items():
-        message += f"⚡ ВЛ: {vl_name} ({len(vl_results)} договоров)\n"
+    # Формируем сообщение по группам ВЛ
+    for vl, vl_results in vl_groups.items():
+        message += f"⚡ ВЛ: {vl}\n"
         
-        # Для каждого договора в этой ВЛ
-        for result in vl_results:
+        # Если для этой ВЛ несколько записей - показываем все
+        if len(vl_results) > 1:
+            for i, result in enumerate(vl_results, 1):
+                supports = result.get('Опоры', '-')
+                supports_count = result.get('Количество опор', '-')
+                provider = result.get('Наименование Провайдера', '-')
+                message += f"  {i}. Опоры: {supports}, Кол-во: {supports_count}\n"
+                message += f"     Контрагент: {provider}\n"
+        else:
+            # Если одна запись - показываем как раньше
+            result = vl_results[0]
             supports = result.get('Опоры', '-')
             supports_count = result.get('Количество опор', '-')
             provider = result.get('Наименование Провайдера', '-')
-            
-            message += f"   📋 Опоры: {supports}, Кол-во: {supports_count}\n"
-            message += f"   🏢 Контрагент: {provider}\n"
+            message += f"Опоры: {supports}, Количество опор: {supports_count}\n"
+            message += f"Контрагент: {provider}\n"
         
         message += "\n"
     
     # Разбиваем на части если сообщение слишком длинное
     if len(message) > 4000:
-        # Отправляем заголовок отдельно
-        header = f"📍 {res_name} РЭС, ТП {tp_name}\n"
-        header += f"✅ Найдено: {unique_vl_count} ВЛ, {total_records} записей с договорами аренды\n\n"
-        await update.message.reply_text(header)
+        # Первое сообщение с заголовком
+        header = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
         
-        # Отправляем по ВЛ
-        current_message = ""
-        for vl_name, vl_results in vl_groups.items():
-            vl_text = f"⚡ ВЛ: {vl_name} ({len(vl_results)} договоров)\n"
+        parts = []
+        current_part = ""
+        
+        for vl, vl_results in vl_groups.items():
+            vl_text = f"⚡ ВЛ: {vl}\n"
             
-            for result in vl_results:
-                supports = result.get('Опоры', '-')
-                supports_count = result.get('Количество опор', '-')
-                provider = result.get('Наименование Провайдера', '-')
-                
-                vl_text += f"   📋 Опоры: {supports}, Кол-во: {supports_count}\n"
-                vl_text += f"   🏢 Контрагент: {provider}\n"
+            if len(vl_results) > 1:
+                for i, result in enumerate(vl_results, 1):
+                    vl_text += f"  {i}. Опоры: {result.get('Опоры', '-')}, Кол-во: {result.get('Количество опор', '-')}\n"
+                    vl_text += f"     Контрагент: {result.get('Наименование Провайдера', '-')}\n"
+            else:
+                result = vl_results[0]
+                vl_text += f"Опоры: {result.get('Опоры', '-')}, Количество опор: {result.get('Количество опор', '-')}\n"
+                vl_text += f"Контрагент: {result.get('Наименование Провайдера', '-')}\n"
             
             vl_text += "\n"
             
-            # Если добавление этой ВЛ превысит лимит - отправляем текущее и начинаем новое
-            if len(current_message + vl_text) > 4000:
-                if current_message:
-                    await update.message.reply_text(current_message)
-                current_message = vl_text
+            # Проверяем, поместится ли в текущую часть
+            if len(current_part + vl_text) > 3500:
+                parts.append(current_part)
+                current_part = vl_text
             else:
-                current_message += vl_text
+                current_part += vl_text
         
-        # Отправляем остаток
-        if current_message:
-            await update.message.reply_text(current_message)
+        if current_part:
+            parts.append(current_part)
+        
+        # Отправляем первую часть с заголовком
+        await update.message.reply_text(header + parts[0])
+        
+        # Отправляем остальные части
+        for part in parts[1:]:
+            await update.message.reply_text(part)
     else:
         await update.message.reply_text(message)
     
-    # Показываем кнопки действий
+    # Используем сохраненный поисковый запрос для кнопки
     await update.message.reply_text(
         "Выберите действие:",
-        reply_markup=get_after_search_keyboard(tp_name)
+        reply_markup=get_after_search_keyboard(tp_name, search_query)
     )
-    # ==================== ГЕНЕРАЦИЯ ОТЧЕТОВ ====================
+
+# ==================== ГЕНЕРАЦИЯ ОТЧЕТОВ ====================
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
     """Генерация отчета"""
@@ -2033,6 +2145,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_states[user_id]['action'] = None
                 await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
                 return
+                
+            # Для search_tp с action 'dual_search' (после двойного поиска)
+            elif state == 'search_tp' and action == 'dual_search':
+                user_states[user_id]['state'] = f'branch_{branch}'
+                user_states[user_id]['action'] = None
+                await update.message.reply_text(f"{branch}", reply_markup=get_branch_menu_keyboard())
+                return
             
             # Для send_notification применяем существующую логику
             elif state == 'send_notification':
@@ -2045,9 +2164,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         user_states[user_id]['state'] = 'search_tp'
                         user_states[user_id]['action'] = 'after_results'
                         tp_name = user_states[user_id].get('last_search_tp', '')
+                        search_query = user_states[user_id].get('last_search_query', tp_name)
                         await update.message.reply_text(
                             "Вернулись к результатам поиска",
-                            reply_markup=get_after_search_keyboard(tp_name)
+                            reply_markup=get_after_search_keyboard(tp_name, search_query)
                         )
                     elif action in ['send_location', 'request_photo', 'add_comment']:
                         # Возвращаемся на шаг назад в процессе уведомления
@@ -2320,7 +2440,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_reference_keyboard()
             )
     
-    # Поиск ТП
+    # Поиск ТП с двойным поиском
     elif state == 'search_tp':
         if text == '🔍 Новый поиск':
             user_states[user_id]['action'] = 'search'
@@ -2329,28 +2449,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🔍 Введите наименование ТП для поиска:",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
-        # 🔴 ИЗМЕНЕНИЕ 4 - ДОБАВЛЯЕМ ОБРАБОТКУ КНОПКИ ОТПРАВКИ УВЕДОМЛЕНИЯ
-        elif text.startswith('📨 Отправить уведомление'):
+        elif text.startswith('📨 Отправить уведомление по'):
             logger.info(f"Обработка кнопки отправки уведомления: '{text}'")
             # Переход к отправке уведомления с уже найденной ТП
-            if 'last_search_tp' in user_states[user_id]:
-                selected_tp = user_states[user_id]['last_search_tp']
+            if 'last_search_query' in user_states[user_id]:
+                search_query = user_states[user_id]['last_search_query']
                 branch = user_states[user_id].get('branch')
                 network = user_states[user_id].get('network')
                 
-                logger.info(f"Найдена сохраненная ТП: {selected_tp}")
+                logger.info(f"Используем поисковый запрос для уведомления: {search_query}")
                 logger.info(f"Branch: {branch}, Network: {network}")
                 
-                # Проверяем права пользователя - может у него указан конкретный филиал
+                # Проверяем права пользователя
                 user_permissions = get_user_permissions(user_id)
                 user_branch = user_permissions.get('branch')
                 
-                # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
                 if user_branch and user_branch != 'All':
-                    branch = user_branch  # Используем как есть из прав (например "Сочинский")
-                    logger.info(f"Используем филиал из прав пользователя для отправки уведомления БЕЗ изменений: {branch}")
+                    branch = user_branch
+                    logger.info(f"Используем филиал из прав пользователя: {branch}")
                 
-                # Загружаем справочник для поиска ВЛ
+                # Ищем в структуре сети (справочник SP) для уведомлений
                 env_key = get_env_key_for_branch(branch, network, is_reference=True)
                 csv_url = os.environ.get(env_key)
                 
@@ -2358,10 +2476,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"❌ Справочник для филиала {branch} не найден")
                     return
                 
-                loading_msg = await update.message.reply_text("🔍 Загружаю данные из справочника...")
+                loading_msg = await update.message.reply_text("🔍 Ищу в справочнике структуры сети...")
                 
                 data = load_csv_from_url(csv_url)
-                results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+                results = search_tp_in_data(search_query, data, 'Наименование ТП')
                 
                 # Фильтруем по РЭС если у пользователя ограничения
                 user_res = user_permissions.get('res')
@@ -2372,62 +2490,147 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await loading_msg.delete()
                 
                 if not results:
-                    await update.message.reply_text("❌ ТП не найдена в справочнике")
+                    await update.message.reply_text("❌ ТП не найдена в справочнике структуры сети")
                     return
                 
-                # Переходим сразу к выбору ВЛ
-                user_states[user_id]['state'] = 'send_notification'
-                user_states[user_id]['action'] = 'select_vl'
-                user_states[user_id]['selected_tp'] = selected_tp
-                user_states[user_id]['tp_data'] = results[0]
-                user_states[user_id]['branch'] = branch  # Сохраняем branch
-                user_states[user_id]['network'] = network  # Сохраняем network
+                tp_list = list(set([r['Наименование ТП'] for r in results]))
                 
-                logger.info(f"Сохранены данные для уведомления:")
-                logger.info(f"  selected_tp: {selected_tp}")
-                logger.info(f"  tp_data: {results[0]}")
-                logger.info(f"  branch: {branch}")
-                logger.info(f"  network: {network}")
-                
-                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
-                
-                keyboard = []
-                for vl in vl_list:
-                    keyboard.append([vl])
-                keyboard.append(['🔍 Новый поиск'])
-                keyboard.append(['⬅️ Назад'])
-                
-                await update.message.reply_text(
-                    f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
-                    f"Выберите ВЛ:",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                )
+                if len(tp_list) == 1:
+                    # Если найдена только одна ТП - сразу переходим к выбору ВЛ
+                    selected_tp = tp_list[0]
+                    user_states[user_id]['state'] = 'send_notification'
+                    user_states[user_id]['action'] = 'select_vl'
+                    user_states[user_id]['selected_tp'] = selected_tp
+                    user_states[user_id]['tp_data'] = results[0]
+                    user_states[user_id]['branch'] = branch
+                    user_states[user_id]['network'] = network
+                    
+                    vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                    
+                    keyboard = []
+                    for vl in vl_list:
+                        keyboard.append([vl])
+                    keyboard.append(['🔍 Новый поиск'])
+                    keyboard.append(['⬅️ Назад'])
+                    
+                    await update.message.reply_text(
+                        f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                        f"Выберите ВЛ:",
+                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    )
+                else:
+                    # Если найдено несколько ТП - показываем список для выбора
+                    keyboard = []
+                    for tp in tp_list:
+                        keyboard.append([tp])
+                    keyboard.append(['⬅️ Назад'])
+                    
+                    user_states[user_id]['notification_results'] = results
+                    user_states[user_id]['action'] = 'select_notification_tp'
+                    user_states[user_id]['state'] = 'send_notification'
+                    
+                    await update.message.reply_text(
+                        f"✅ Найдено {len(tp_list)} ТП в структуре сети. Выберите нужную:",
+                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    )
             else:
                 await update.message.reply_text("❌ Сначала выполните поиск ТП")
+                
+        # Обработка нажатий на кнопки из двойного поиска
+        elif text.startswith('📄 ') or text.startswith('🔌 '):
+            # Извлекаем название ТП из кнопки
+            tp_display_name = text[2:].strip()
+            
+            # Получаем сохраненные результаты поиска
+            dual_results = user_states[user_id].get('dual_search_results', {})
+            
+            if text.startswith('📄 '):
+                # Нажата кнопка из реестра договоров
+                registry_results = dual_results.get('registry', [])
+                registry_tp_names = dual_results.get('registry_tp_names', [])
+                
+                # Находим полное название ТП
+                full_tp_name = None
+                for tp_name in registry_tp_names:
+                    if tp_name.startswith(tp_display_name) or tp_display_name in tp_name:
+                        full_tp_name = tp_name
+                        break
+                
+                if full_tp_name:
+                    # Фильтруем результаты по найденной ТП
+                    tp_results = [r for r in registry_results if r['Наименование ТП'] == full_tp_name]
+                    if tp_results:
+                        search_query = user_states[user_id].get('last_search_query')
+                        await show_tp_results(update, tp_results, full_tp_name, search_query)
+                        user_states[user_id]['action'] = 'after_results'
+                    else:
+                        await update.message.reply_text("❌ Результаты не найдены")
+                        
+            elif text.startswith('🔌 '):
+                # Нажата кнопка из структуры сети - переходим к выбору ВЛ для уведомления
+                structure_results = dual_results.get('structure', [])
+                structure_tp_names = dual_results.get('structure_tp_names', [])
+                
+                # Находим полное название ТП
+                full_tp_name = None
+                for tp_name in structure_tp_names:
+                    if tp_name.startswith(tp_display_name) or tp_display_name in tp_name:
+                        full_tp_name = tp_name
+                        break
+                
+                if full_tp_name:
+                    # Фильтруем результаты по найденной ТП
+                    tp_results = [r for r in structure_results if r['Наименование ТП'] == full_tp_name]
+                    
+                    if tp_results:
+                        # Переходим к отправке уведомления
+                        user_states[user_id]['state'] = 'send_notification'
+                        user_states[user_id]['action'] = 'select_vl'
+                        user_states[user_id]['selected_tp'] = full_tp_name
+                        user_states[user_id]['tp_data'] = tp_results[0]
+                        
+                        vl_list = list(set([r['Наименование ВЛ'] for r in tp_results]))
+                        
+                        keyboard = []
+                        for vl in vl_list:
+                            keyboard.append([vl])
+                        keyboard.append(['🔍 Новый поиск'])
+                        keyboard.append(['⬅️ Назад'])
+                        
+                        await update.message.reply_text(
+                            f"📨 Отправка уведомления по ТП: {full_tp_name}\n\n"
+                            f"Выберите ВЛ:",
+                            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                        )
+                    else:
+                        await update.message.reply_text("❌ Результаты не найдены")
+        
         elif user_states[user_id].get('action') == 'search':
+            # Новый двойной поиск
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
             
-            # Проверяем права пользователя - может у него указан конкретный филиал
+            # Проверяем права пользователя
             user_permissions = get_user_permissions(user_id)
             user_branch = user_permissions.get('branch')
             user_res = user_permissions.get('res')
             
-            # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
+            # Если у пользователя указан конкретный филиал в правах - используем его
             if user_branch and user_branch != 'All':
-                branch = user_branch  # Используем как есть из прав (например "Сочинский")
-                logger.info(f"Используем филиал из прав пользователя БЕЗ изменений: {branch}")
+                branch = user_branch
+                logger.info(f"Используем филиал из прав пользователя: {branch}")
             else:
                 # Только если выбрали из меню - нормализуем
                 branch = normalize_branch_name(branch)
             
-            logger.info(f"Поиск ТП для филиала: {branch}, сеть: {network}")
+            logger.info(f"Двойной поиск ТП для филиала: {branch}, сеть: {network}")
             if user_res and user_res != 'All':
                 logger.info(f"Пользователь имеет доступ только к РЭС: {user_res}")
             
             search_messages = [
                 "🔍 Ищу информацию...",
-                "📡 Подключаюсь к базе данных...",
+                "📋 Проверяю реестр договоров...",
+                "🗂️ Проверяю структуру сети...",
                 "📊 Анализирую данные...",
                 "🔄 Обрабатываю результаты..."
             ]
@@ -2441,77 +2644,75 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
             
-            env_key = get_env_key_for_branch(branch, network)
-            csv_url = os.environ.get(env_key)
+            # Выполняем двойной поиск
+            dual_results = await search_tp_in_both_catalogs(text, branch, network, user_res)
             
-            logger.info(f"Итоговые параметры поиска:")
-            logger.info(f"  Филиал: {branch}")
-            logger.info(f"  Сеть: {network}")
-            logger.info(f"  Ключ переменной: {env_key}")
-            logger.info(f"  URL из переменной: {csv_url}")
+            await loading_msg.delete()
             
-            if not csv_url:
-                available_vars = [key for key in os.environ.keys() if 'URL' in key and network in key]
-                logger.error(f"Доступные переменные для {network}: {available_vars}")
-                await loading_msg.delete()
+            # Сохраняем результаты и оригинальный запрос
+            user_states[user_id]['dual_search_results'] = dual_results
+            user_states[user_id]['last_search_query'] = text
+            user_states[user_id]['action'] = 'dual_search'
+            
+            registry_tp_names = dual_results['registry_tp_names']
+            structure_tp_names = dual_results['structure_tp_names']
+            
+            if not registry_tp_names and not structure_tp_names:
                 await update.message.reply_text(
-                    f"❌ Данные для филиала {branch} не найдены\n"
-                    f"Искали переменную: {env_key}\n"
-                    f"Доступные: {', '.join(available_vars[:5])}"
+                    "❌ ТП не найдено ни в одном справочнике.\n\n"
+                    "Попробуйте другой запрос.",
+                    reply_markup=get_after_search_keyboard(None, text)
                 )
-                return
-            
-            data = load_csv_from_url(csv_url)
-            results = search_tp_in_data(text, data, 'Наименование ТП')
-            
-            # Если у пользователя указан конкретный РЭС - фильтруем результаты
-            if user_res and user_res != 'All':
-                filtered_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+            elif len(registry_tp_names) == 1 and not structure_tp_names:
+                # Если найдена только одна ТП в реестре договоров
+                await show_tp_results(update, dual_results['registry'], registry_tp_names[0], text)
+            elif not registry_tp_names and len(structure_tp_names) == 1:
+                # Если найдена только одна ТП в структуре сети - сразу переходим к уведомлению
+                selected_tp = structure_tp_names[0]
+                tp_results = dual_results['structure']
                 
-                await loading_msg.delete()
+                user_states[user_id]['state'] = 'send_notification'
+                user_states[user_id]['action'] = 'select_vl'
+                user_states[user_id]['selected_tp'] = selected_tp
+                user_states[user_id]['tp_data'] = tp_results[0]
                 
-                if not filtered_results:
-                    # Проверяем, были ли вообще результаты до фильтрации
-                    if results:
-                        await update.message.reply_text(
-                            f"❌ В {user_res} РЭС запрашиваемая ТП не найдена.\n\n"
-                            f"ℹ️ Данная ТП присутствует в других РЭС филиала {branch}."
-                        )
-                    else:
-                        await update.message.reply_text(
-                            f"❌ ТП не найдена в {user_res} РЭС.\n\n"
-                            "Попробуйте другой запрос."
-                        )
-                    return
+                vl_list = list(set([r['Наименование ВЛ'] for r in tp_results]))
                 
-                results = filtered_results
-            else:
-                await loading_msg.delete()
-                
-                if not results:
-                    await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
-                    return
-            
-            tp_list = list(set([r['Наименование ТП'] for r in results]))
-            
-            if len(tp_list) == 1:
-                # Если найдена только одна ТП, сразу показываем результаты
-                await show_tp_results(update, results, tp_list[0])
-                # Устанавливаем action для корректной работы кнопок
-                user_states[user_id]['action'] = 'after_results'
-            else:
-                # Показываем ВСЕ найденные ТП без ограничения
                 keyboard = []
-                for tp in tp_list:  # Убрали [:10] - показываем все
-                    keyboard.append([tp])
+                for vl in vl_list:
+                    keyboard.append([vl])
+                keyboard.append(['🔍 Новый поиск'])
                 keyboard.append(['⬅️ Назад'])
                 
-                user_states[user_id]['search_results'] = results
-                user_states[user_id]['action'] = 'select_tp'
+                await update.message.reply_text(
+                    f"✅ ТП найдена только в структуре сети\n\n"
+                    f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                    f"Выберите ВЛ:",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+            else:
+                # Показываем двойную клавиатуру
+                registry_count = len(dual_results['registry'])
+                structure_count = len(dual_results['structure'])
+                
+                message = f"🔍 Результаты поиска по запросу: **{text}**\n\n"
+                
+                if registry_tp_names:
+                    message += f"📋 **Реестр договоров** (найдено {registry_count} записей)\n"
+                    message += f"   ТП: {len(registry_tp_names)} шт.\n\n"
+                
+                if structure_tp_names:
+                    message += f"🗂️ **Структура сети** (найдено {structure_count} записей)\n"
+                    message += f"   ТП: {len(structure_tp_names)} шт.\n\n"
+                
+                message += "📌 Выберите ТП:\n"
+                message += "• Слева (📄) - просмотр договоров\n"
+                message += "• Справа (🔌) - отправка уведомления"
                 
                 await update.message.reply_text(
-                    f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    message,
+                    reply_markup=get_dual_search_keyboard(registry_tp_names, structure_tp_names),
+                    parse_mode='Markdown'
                 )
         
         elif user_states[user_id].get('action') == 'select_tp':
@@ -2519,8 +2720,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filtered_results = [r for r in results if r['Наименование ТП'] == text]
             
             if filtered_results:
-                await show_tp_results(update, filtered_results, text)
-                user_states[user_id]['action'] = 'after_results'
+                search_query = user_states[user_id].get('last_search_query')
+                await show_tp_results(update, filtered_results, text, search_query)
+                user_states[user_id]['action'] = 'search'
         
     # Уведомление - поиск ТП
     elif state == 'send_notification' and user_states[user_id].get('action') == 'notification_tp':
@@ -2646,6 +2848,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Очищаем данные предыдущего поиска
             if 'last_search_tp' in user_states[user_id]:
                 del user_states[user_id]['last_search_tp']
+            if 'last_search_query' in user_states[user_id]:
+                del user_states[user_id]['last_search_query']
             keyboard = [['⬅️ Назад']]
             await update.message.reply_text(
                 "🔍 Введите наименование ТП для поиска:",
@@ -3198,14 +3402,18 @@ if __name__ == '__main__':
     load_users_data()
     load_bot_users()
     
-    async def post_init(application: Application) -> None:
-        """Вызывается после инициализации приложения"""
+    async def init_and_start():
+        """Инициализация и запуск фоновых задач"""
         await preload_documents()
-        await preload_csv_files()
+        await preload_csv_files()  # Предзагрузка CSV
         
         asyncio.create_task(refresh_documents_cache())
         asyncio.create_task(refresh_users_data())
         asyncio.create_task(save_bot_users_periodically())
+    
+    async def post_init(application: Application) -> None:
+        """Вызывается после инициализации приложения"""
+        await init_and_start()
     
     async def post_shutdown(application: Application) -> None:
         """Вызывается при остановке приложения"""
