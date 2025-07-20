@@ -2339,6 +2339,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
            
 # ЧАСТЬ ФИНАЛ=======================================================================================================================
 
+   
     # Уведомление - поиск ТП
     elif state == 'send_notification' and user_states[user_id].get('action') == 'notification_tp':
         branch = user_states[user_id].get('branch')
@@ -2921,8 +2922,23 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
         )
         return
     
-    # Создаем DataFrame
-    df = pd.DataFrame(notifications)
+    # Создаем DataFrame - БЕЗ ID!
+    report_data = []
+    for notif in notifications:
+        report_data.append({
+            'Филиал': notif['branch'],
+            'РЭС': notif['res'],
+            'ТП': notif['tp'],
+            'ВЛ': notif['vl'],
+            'Отправитель': notif['sender_name'],
+            'Получатель': notif['recipient_name'],
+            'Дата и время': notif['datetime'],
+            'Координаты': notif['coordinates'],
+            'Комментарий': notif['comment'],
+            'Фото': 'Да' if notif['has_photo'] else 'Нет'  # Преобразуем в Да/Нет
+        })
+    
+    df = pd.DataFrame(report_data)
     
     # Создаем Excel файл
     buffer = BytesIO()
@@ -2943,7 +2959,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
         
-        # Автоподбор ширины колонок - ИСПРАВЛЕНО
+        # Автоподбор ширины колонок
         for i, col in enumerate(df.columns):
             # Безопасно вычисляем максимальную длину
             try:
@@ -2992,13 +3008,12 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
     """Генерация отчета по активности"""
     loading_msg = await update.message.reply_text("📊 Генерирую отчет активности...")
     
-    # Собираем данные об активности
+    # Собираем данные об активности - БЕЗ ID!
     activity_data = []
     for uid, activity in user_activity.items():
         user_data = users_cache.get(uid, {})
         if network == 'RK' and user_data.get('visibility') in ['All', 'RK']:
             activity_data.append({
-                'ID': uid,
                 'ФИО': user_data.get('name', 'Неизвестный'),
                 'Филиал': user_data.get('branch', '-'),
                 'РЭС': user_data.get('res', '-'),
@@ -3007,7 +3022,6 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
             })
         elif network == 'UG' and user_data.get('visibility') in ['All', 'UG']:
             activity_data.append({
-                'ID': uid,
                 'ФИО': user_data.get('name', 'Неизвестный'),
                 'Филиал': user_data.get('branch', '-'),
                 'РЭС': user_data.get('res', '-'),
@@ -3044,7 +3058,7 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
         
-        # Автоподбор ширины колонок - ИСПРАВЛЕНО
+        # Автоподбор ширины колонок
         for i, col in enumerate(df.columns):
             # Безопасно вычисляем максимальную длину
             try:
@@ -3143,7 +3157,7 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
         
-        # Автоподбор ширины колонок - ИСПРАВЛЕНО
+        # Автоподбор ширины колонок
         for i, col in enumerate(df.columns):
             # Безопасно вычисляем максимальную длину
             try:
