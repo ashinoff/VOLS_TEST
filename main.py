@@ -1148,8 +1148,9 @@ async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Пользователь заблокировал бота\n"
             f"• Неверный ID"
         )
-        # ЧАСТЬ 5.1 КОНЕЦ ====================
-# =ЧАСТЬ 5.2 ====== ОТПРАВКА УВЕДОМЛЕНИЙ ====================
+        # ЧАСТЬ 5.1 КОНЕЦ =====================================================================================================
+# =ЧАСТЬ 5.2 ====== ОТПРАВКА УВЕДОМЛЕНИЙ ====================================================================================
+
 async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправить уведомление ответственным лицам"""
     user_id = str(update.effective_user.id)
@@ -1389,20 +1390,26 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if csv_url:
         data = load_csv_from_url(csv_url)
-        results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+        # ВАЖНО: используем ТОЧНОЕ название ТП для поиска
+        results = [r for r in data if r.get('Наименование ТП', '') == selected_tp]
+        
+        logger.info(f"[send_notification] Перезагрузка данных для ТП '{selected_tp}'")
+        logger.info(f"[send_notification] Найдено записей с точным совпадением: {len(results)}")
         
         # Фильтруем по РЭС если нужно
         user_permissions = get_user_permissions(user_id)
         user_res = user_permissions.get('res')
         if user_res and user_res != 'All':
             results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+            logger.info(f"[send_notification] После фильтрации по РЭС '{user_res}': {len(results)} записей")
         
         if results:
             # ВАЖНО: Получаем ВСЕ уникальные ВЛ
             vl_list = list(set([r['Наименование ВЛ'] for r in results]))
             vl_list.sort()
             
-            logger.info(f"[send_notification] После отправки найдено {len(vl_list)} ВЛ для повторной отправки")
+            logger.info(f"[send_notification] После отправки найдено {len(vl_list)} уникальных ВЛ")
+            logger.info(f"[send_notification] ВЛ: {vl_list}")
             
             # Используем новую функцию для создания клавиатуры
             reply_markup = get_vl_selection_keyboard(vl_list, selected_tp)
@@ -1414,6 +1421,7 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         else:
             # Если не удалось загрузить ВЛ - возвращаемся в меню филиала
+            logger.warning(f"[send_notification] Не найдено ВЛ для ТП '{selected_tp}'")
             user_states[user_id]['state'] = f'branch_{branch}'
             user_states[user_id]['branch'] = branch
             user_states[user_id]['network'] = network
@@ -1549,10 +1557,9 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
             "Выберите действие:",
             reply_markup=get_after_search_keyboard(tp_name, search_query)
         )
-        #ЧАСТЬ 5.2 КОНЕЦ= ОБРАБОТЧИК СООБЩЕНИЙ ====================
-# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+        #ЧАСТЬ 5.2 КОНЕЦ= ОБРАБОТЧИК СООБЩЕНИЙ ================================================================================================
 
-# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
@@ -2331,8 +2338,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ЧАСТЬ 5.3 КОНЕЦ====================================================================================================================
            
 # ЧАСТЬ ФИНАЛ=======================================================================================================================
-        
-    # Уведомление - поиск ТП  
+
     # Уведомление - поиск ТП
     elif state == 'send_notification' and user_states[user_id].get('action') == 'notification_tp':
         branch = user_states[user_id].get('branch')
@@ -2937,10 +2943,18 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ne
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
         
-        # Автоподбор ширины колонок
+        # Автоподбор ширины колонок - ИСПРАВЛЕНО
         for i, col in enumerate(df.columns):
-            column_len = df[col].astype(str).max().len()
-            column_len = max(column_len, len(col)) + 2
+            # Безопасно вычисляем максимальную длину
+            try:
+                max_len = df[col].astype(str).str.len().max()
+                # Проверяем на NaN
+                if pd.isna(max_len):
+                    max_len = 10
+                column_len = max(int(max_len), len(col)) + 2
+            except:
+                column_len = len(col) + 2
+            
             worksheet.set_column(i, i, column_len)
     
     buffer.seek(0)
@@ -3030,10 +3044,18 @@ async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
         
-        # Автоподбор ширины колонок
+        # Автоподбор ширины колонок - ИСПРАВЛЕНО
         for i, col in enumerate(df.columns):
-            column_len = df[col].astype(str).max().len()
-            column_len = max(column_len, len(col)) + 2
+            # Безопасно вычисляем максимальную длину
+            try:
+                max_len = df[col].astype(str).str.len().max()
+                # Проверяем на NaN
+                if pd.isna(max_len):
+                    max_len = 10
+                column_len = max(int(max_len), len(col)) + 2
+            except:
+                column_len = len(col) + 2
+            
             worksheet.set_column(i, i, column_len)
     
     buffer.seek(0)
@@ -3121,10 +3143,18 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
         
-        # Автоподбор ширины колонок
+        # Автоподбор ширины колонок - ИСПРАВЛЕНО
         for i, col in enumerate(df.columns):
-            column_len = df[col].astype(str).max().len()
-            column_len = max(column_len, len(col)) + 2
+            # Безопасно вычисляем максимальную длину
+            try:
+                max_len = df[col].astype(str).str.len().max()
+                # Проверяем на NaN
+                if pd.isna(max_len):
+                    max_len = 10
+                column_len = max(int(max_len), len(col)) + 2
+            except:
+                column_len = len(col) + 2
+            
             worksheet.set_column(i, i, column_len)
     
     buffer.seek(0)
