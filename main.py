@@ -308,7 +308,8 @@ async def load_csv_from_url_async(url: str) -> List[Dict]:
         if url in csv_cache:
             return csv_cache[url]
         return []
-        # Синхронная версия для обратной совместимости (использует кэш если есть)
+
+# Синхронная версия для обратной совместимости (использует кэш если есть)
 def load_csv_from_url(url: str) -> List[Dict]:
     """Загрузить CSV файл по URL (проверяет кэш)"""
     # Сначала проверяем кэш
@@ -444,8 +445,7 @@ def update_user_activity(user_id: str):
     if user_id not in user_activity:
         user_activity[user_id] = {'last_activity': get_moscow_time(), 'count': 0}
     user_activity[user_id]['last_activity'] = get_moscow_time()
-    
-# ==================== РАБОТА С ДОКУМЕНТАМИ ====================
+    # ==================== РАБОТА С ДОКУМЕНТАМИ ====================
 
 async def download_document(url: str) -> Optional[BytesIO]:
     """Скачать документ по URL (асинхронно)"""
@@ -690,7 +690,8 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     env_key = f"{branch_key}_URL{suffix}"
     logger.info(f"Итоговый ключ переменной окружения: {env_key}")
     return env_key
-    # ==================== ФУНКЦИИ КЛАВИАТУР ====================
+
+# ==================== ФУНКЦИИ КЛАВИАТУР ====================
 
 def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     """Получить главную клавиатуру в зависимости от прав"""
@@ -1038,15 +1039,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🕐 Время сервера: {get_moscow_time().strftime('%d.%m.%Y %H:%M:%S')} МСК
 
 📊 Статистика:
-- Уведомлений РК: {len(notifications_storage.get('RK', []))}
-- Уведомлений ЮГ: {len(notifications_storage.get('UG', []))}
-- Активных пользователей: {len(user_activity)}
-- CSV в кэше: {len(csv_cache)} файлов
+• Уведомлений РК: {len(notifications_storage.get('RK', []))}
+• Уведомлений ЮГ: {len(notifications_storage.get('UG', []))}
+• Активных пользователей: {len(user_activity)}
+• CSV в кэше: {len(csv_cache)} файлов
 
 🔧 Переменные окружения:
-- BOT_TOKEN: {'✅ Задан' if BOT_TOKEN else '❌ Не задан'}
-- ZONES_CSV_URL: {'✅ Задан' if ZONES_CSV_URL else '❌ Не задан'}
-- WEBHOOK_URL: {'✅ Задан' if WEBHOOK_URL else '❌ Не задан'}
+• BOT_TOKEN: {'✅ Задан' if BOT_TOKEN else '❌ Не задан'}
+• ZONES_CSV_URL: {'✅ Задан' if ZONES_CSV_URL else '❌ Не задан'}
+• WEBHOOK_URL: {'✅ Задан' if WEBHOOK_URL else '❌ Не задан'}
 
 ⚠️ Данные о запусках бота сбрасываются после перезапуска!"""
     
@@ -1399,6 +1400,7 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
     user_states[user_id]['action'] = 'after_results'
     logger.info(f"[show_tp_results] Сохранена ТП для отправки уведомления: {tp_name}")
     logger.info(f"[show_tp_results] Сохранен поисковый запрос: {search_query}")
+    logger.info(f"[show_tp_results] Всего найдено записей: {len(results)}")
     
     res_name = results[0].get('РЭС', 'Неизвестный')
     
@@ -1410,7 +1412,11 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
             vl_groups[vl] = []
         vl_groups[vl].append(result)
     
-    message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
+    logger.info(f"[show_tp_results] Найдено уникальных ВЛ: {len(vl_groups)}")
+    logger.info(f"[show_tp_results] ВЛ: {list(vl_groups.keys())}")
+    
+    message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n"
+    message += f"🔌 Уникальных ВЛ: {len(vl_groups)}\n\n"
     
     # Формируем сообщение по группам ВЛ
     for vl, vl_results in vl_groups.items():
@@ -1438,7 +1444,8 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
     # Разбиваем на части если сообщение слишком длинное
     if len(message) > 4000:
         # Первое сообщение с заголовком
-        header = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
+        header = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n"
+        header += f"🔌 Уникальных ВЛ: {len(vl_groups)}\n\n"
         
         parts = []
         current_part = ""
@@ -1481,8 +1488,7 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
         "Выберите действие:",
         reply_markup=get_after_search_keyboard(tp_name, search_query)
     )
-
-# ==================== ГЕНЕРАЦИЯ ОТЧЕТОВ ====================
+    # ==================== ГЕНЕРАЦИЯ ОТЧЕТОВ ====================
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
     """Генерация отчета"""
@@ -1914,14 +1920,14 @@ _Приносим извинения за неудобства._"""
     result_text = f"""✅ Уведомления о перезапуске отправлены!
 
 📊 Статистика:
-- Всего в базе: {total_users}
-- ✅ Успешно отправлено: {success_count}
-- ❌ Не удалось отправить: {failed_count}
+• Всего в базе: {total_users}
+• ✅ Успешно отправлено: {success_count}
+• ❌ Не удалось отправить: {failed_count}
 
 💡 Пользователи, которым не удалось отправить, вероятно:
-- Не запускали бота ни разу
-- Заблокировали бота  
-- Удалили аккаунт Telegram
+• Не запускали бота ни разу
+• Заблокировали бота  
+• Удалили аккаунт Telegram
 
 🔄 Рекомендуется использовать эту функцию после каждого обновления бота!"""
     
@@ -2007,10 +2013,10 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_text = f"""✅ Рассылка завершена!
 
 📊 Статистика:
-- Тип рассылки: {recipient_type}
-- Всего получателей: {total_users}
-- ✅ Успешно: {success_count}
-- ❌ Не удалось: {failed_count}"""
+• Тип рассылки: {recipient_type}
+• Всего получателей: {total_users}
+• ✅ Успешно: {success_count}
+• ❌ Не удалось: {failed_count}"""
     
     if failed_users and len(failed_users) <= 10:
         result_text += f"\n\n❌ Не удалось отправить:\n" + "\n".join(failed_users[:10])
@@ -2023,8 +2029,7 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text,
         reply_markup=get_main_keyboard(get_user_permissions(user_id))
     )
-
-# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+    # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
@@ -2200,6 +2205,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 
                                 if results:
                                     vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                                    vl_list.sort()
                                     keyboard = []
                                     for vl in vl_list:
                                         keyboard.append([vl])
@@ -2207,7 +2213,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     keyboard.append(['⬅️ Назад'])
                                     
                                     await update.message.reply_text(
-                                        f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                                        f"📨 Отправка уведомления по ТП: {selected_tp}\n"
+                                        f"📊 Найдено ВЛ: {len(vl_list)}\n\n"
                                         f"Выберите ВЛ:",
                                         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                                     )
@@ -2439,8 +2446,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Выберите документ",
                 reply_markup=get_reference_keyboard()
             )
-    
-    # Поиск ТП с двойным поиском
+            # Поиск ТП с двойным поиском
     elif state == 'search_tp':
         if text == '🔍 Новый поиск':
             user_states[user_id]['action'] = 'search'
@@ -2506,6 +2512,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     user_states[user_id]['network'] = network
                     
                     vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+                    vl_list.sort()
                     
                     keyboard = []
                     for vl in vl_list:
@@ -2514,7 +2521,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     keyboard.append(['⬅️ Назад'])
                     
                     await update.message.reply_text(
-                        f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                        f"📨 Отправка уведомления по ТП: {selected_tp}\n"
+                        f"📊 Найдено ВЛ: {len(vl_list)}\n\n"
                         f"Выберите ВЛ:",
                         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                     )
@@ -2582,6 +2590,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Фильтруем результаты по найденной ТП
                     tp_results = [r for r in structure_results if r['Наименование ТП'] == full_tp_name]
                     
+                    logger.info(f"[handle_message] Выбрана ТП из структуры: {full_tp_name}")
+                    logger.info(f"[handle_message] Найдено записей для этой ТП: {len(tp_results)}")
+                    
                     if tp_results:
                         # Переходим к отправке уведомления
                         user_states[user_id]['state'] = 'send_notification'
@@ -2589,7 +2600,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         user_states[user_id]['selected_tp'] = full_tp_name
                         user_states[user_id]['tp_data'] = tp_results[0]
                         
+                        # Получаем ВСЕ уникальные ВЛ
                         vl_list = list(set([r['Наименование ВЛ'] for r in tp_results]))
+                        vl_list.sort()  # Сортируем для удобства
+                        
+                        logger.info(f"[handle_message] Уникальных ВЛ найдено: {len(vl_list)}")
+                        logger.info(f"[handle_message] ВЛ: {vl_list}")
                         
                         keyboard = []
                         for vl in vl_list:
@@ -2598,7 +2614,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         keyboard.append(['⬅️ Назад'])
                         
                         await update.message.reply_text(
-                            f"📨 Отправка уведомления по ТП: {full_tp_name}\n\n"
+                            f"📨 Отправка уведомления по ТП: {full_tp_name}\n"
+                            f"📊 Найдено ВЛ: {len(vl_list)}\n\n"
                             f"Выберите ВЛ:",
                             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                         )
@@ -2669,7 +2686,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif not registry_tp_names and len(structure_tp_names) == 1:
                 # Если найдена только одна ТП в структуре сети - сразу переходим к уведомлению
                 selected_tp = structure_tp_names[0]
-                tp_results = dual_results['structure']
+                tp_results = [r for r in dual_results['structure'] if r['Наименование ТП'] == selected_tp]
+                
+                logger.info(f"[handle_message] Единственная ТП в структуре: {selected_tp}")
+                logger.info(f"[handle_message] Записей для этой ТП: {len(tp_results)}")
                 
                 user_states[user_id]['state'] = 'send_notification'
                 user_states[user_id]['action'] = 'select_vl'
@@ -2677,6 +2697,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_states[user_id]['tp_data'] = tp_results[0]
                 
                 vl_list = list(set([r['Наименование ВЛ'] for r in tp_results]))
+                vl_list.sort()
+                
+                logger.info(f"[handle_message] Уникальных ВЛ: {len(vl_list)}")
+                logger.info(f"[handle_message] ВЛ: {vl_list}")
                 
                 keyboard = []
                 for vl in vl_list:
@@ -2686,7 +2710,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 await update.message.reply_text(
                     f"✅ ТП найдена только в структуре сети\n\n"
-                    f"📨 Отправка уведомления по ТП: {selected_tp}\n\n"
+                    f"📨 Отправка уведомления по ТП: {selected_tp}\n"
+                    f"📊 Найдено ВЛ: {len(vl_list)}\n\n"
                     f"Выберите ВЛ:",
                     reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                 )
@@ -2824,6 +2849,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id]['tp_data'] = filtered_results[0]
             
             vl_list = list(set([r['Наименование ВЛ'] for r in filtered_results]))
+            vl_list.sort()
             
             keyboard = []
             for vl in vl_list:
@@ -2834,7 +2860,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id]['action'] = 'select_vl'
             
             await update.message.reply_text(
-                f"📨 Отправка уведомления по ТП: {text}\n\n"
+                f"📨 Отправка уведомления по ТП: {text}\n"
+                f"📊 Найдено ВЛ: {len(vl_list)}\n\n"
                 f"Выберите ВЛ:",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
@@ -2903,8 +2930,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == 'add_comment' and text not in ['⬅️ Назад', '📤 Отправить без комментария']:
             user_states[user_id]['comment'] = text
             await send_notification(update, context)
-    
-    # Персональные настройки
+            # Персональные настройки
     elif state == 'settings':
         if text == '📖 Руководство пользователя':
             if USER_GUIDE_URL:
@@ -2937,10 +2963,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📧 Email: {user_data.get('email', 'Не указан')}
 
 🔐 Права доступа:
-- Видимость: {user_data.get('visibility', '-')}
-- Филиал: {user_data.get('branch', '-')}
-- РЭС: {user_data.get('res', '-')}
-- Ответственность: {user_data.get('responsible', 'Не назначена')}"""
+• Видимость: {user_data.get('visibility', '-')}
+• Филиал: {user_data.get('branch', '-')}
+• РЭС: {user_data.get('res', '-')}
+• Ответственность: {user_data.get('responsible', 'Не назначена')}"""
             
             await update.message.reply_text(info_text)
     
