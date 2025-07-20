@@ -2,7 +2,7 @@
 ВОЛС Ассистент - Telegram бот для управления уведомлениями о бездоговорных ВОЛС
 Версия: 2.1.0 OPTIMIZED
 """
-
+# ЧАСТЬ 1
 BOT_VERSION = "2.1.0"
 
 import os
@@ -121,7 +121,7 @@ REFERENCE_DOCS = {
 USER_GUIDE_URL = os.environ.get('USER_GUIDE_URL', 'https://your-domain.com/vols-guide')
 
 BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
-# ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ====================
+# ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ====================
 
 def normalize_tp_name_advanced(name: str) -> str:
     """Улучшенная нормализация имени ТП для поиска"""
@@ -378,7 +378,8 @@ async def preload_csv_files():
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.error(f"❌ Ошибка загрузки {csv_urls[i]}: {result}")
-                # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+# чАСТЬ 2 КОНЕЦ        
+# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
 def get_moscow_time():
     """Получить текущее время в Москве"""
@@ -689,7 +690,9 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     env_key = f"{branch_key}_URL{suffix}"
     logger.info(f"Итоговый ключ переменной окружения: {env_key}")
     return env_key
-    # ==================== ФУНКЦИИ КЛАВИАТУР ====================
+    # ЧАСТЬ 3 КОНЕЦ
+# ЧАСТЬ 4 === ФУНКЦИИ КЛАВИАТУР ====================
+# ==================== ФУНКЦИИ КЛАВИАТУР ====================
 
 def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     """Получить главную клавиатуру в зависимости от прав"""
@@ -894,24 +897,24 @@ def get_dual_search_keyboard(registry_tp_names: List[str], structure_tp_names: L
             display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
             row.append(f'📄 {display_name}')
         else:
-            # Если нет данных - добавляем неактивную кнопку
-            row.append('➖ Нет данных')
+            # Если нет данных - добавляем просто тире
+            row.append('➖')
         
         # Кнопка из структуры сети (справа)
         if i < len(structure_tp_names):
             tp_name = structure_tp_names[i]
             # Обрезаем название если слишком длинное
             display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
-            row.append(f'🔌 {display_name}')
+            row.append(f'📍 {display_name}')
         else:
-            # Если нет данных - добавляем неактивную кнопку
-            row.append('➖ Нет данных')
+            # Если нет данных - добавляем просто тире
+            row.append('➖')
         
         keyboard.append(row)
     
-    # Если совсем нет результатов - добавляем строку с двумя неактивными кнопками
+    # Если совсем нет результатов - добавляем строку с двумя тире
     if not registry_tp_names and not structure_tp_names:
-        keyboard.append(['➖ Нет результатов', '➖ Нет результатов'])
+        keyboard.append(['➖', '➖'])
     
     # Кнопки действий
     keyboard.append(['🔍 Новый поиск'])
@@ -954,8 +957,8 @@ def get_vl_selection_keyboard(vl_list: List[str], tp_name: str) -> ReplyKeyboard
     keyboard.append(['⬅️ Назад'])
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    # ==================== EMAIL ФУНКЦИИ ====================
-
+    #чАСТЬ 4 КОНЕЦ ====================
+ # ЧАСТЬ 5.1 ========= EMAIL ФУНКЦИИ ====================
 async def send_email(to_email: str, subject: str, body: str, attachment_data: BytesIO = None, attachment_name: str = None):
     """Отправка email через SMTP"""
     if not SMTP_EMAIL or not SMTP_PASSWORD:
@@ -1145,8 +1148,8 @@ async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Пользователь заблокировал бота\n"
             f"• Неверный ID"
         )
-        # ==================== ОТПРАВКА УВЕДОМЛЕНИЙ ====================
-
+        # ЧАСТЬ 5.1 КОНЕЦ ====================
+# =ЧАСТЬ 5.2 ====== ОТПРАВКА УВЕДОМЛЕНИЙ ====================
 async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправить уведомление ответственным лицам"""
     user_id = str(update.effective_user.id)
@@ -1546,7 +1549,8 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
             "Выберите действие:",
             reply_markup=get_after_search_keyboard(tp_name, search_query)
         )
-        # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+        #ЧАСТЬ 5.2 КОНЕЦ= ОБРАБОТЧИК СООБЩЕНИЙ ====================
+# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
@@ -2263,7 +2267,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'branch': current_data.get('branch'),
                 'network': current_data.get('network')
             }
-            # Уведомление - поиск ТП
+            # ЧАСТЬ 5.3 КОНЕЦ
+# ЧАСТЬ ФИНАЛ
+          # Уведомление - поиск ТП  
+   # Уведомление - поиск ТП
     elif state == 'send_notification' and user_states[user_id].get('action') == 'notification_tp':
         branch = user_states[user_id].get('branch')
         network = user_states[user_id].get('network')
