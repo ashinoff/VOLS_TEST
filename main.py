@@ -851,6 +851,16 @@ def get_after_search_keyboard(tp_name: str = None, search_query: str = None) -> 
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def get_after_dual_search_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура после просмотра результатов из двойного поиска"""
+    keyboard = [
+        ['⬅️ Вернуться к результатам поиска'],
+        ['🔍 Новый поиск'],
+        ['⬅️ Назад в меню филиала']
+    ]
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 def get_report_action_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура действий с отчетом"""
     keyboard = [
@@ -862,22 +872,16 @@ def get_report_action_keyboard() -> ReplyKeyboardMarkup:
 # ВАЖНАЯ ФУНКЦИЯ! Клавиатура для двойного поиска - показывает ВСЕ найденные ТП
 def get_dual_search_keyboard(registry_tp_names: List[str], structure_tp_names: List[str]) -> ReplyKeyboardMarkup:
     """Клавиатура с результатами поиска из двух справочников
-    ВАЖНО: Показывает ВСЕ найденные ТП из обоих справочников"""
+    ВАЖНО: Показывает ВСЕ найденные ТП из обоих справочников с раздельными колонками"""
     keyboard = []
     
     # Определяем максимальное количество строк
-    max_rows = max(len(registry_tp_names), len(structure_tp_names))
+    max_rows = max(len(registry_tp_names), len(structure_tp_names), 1)  # Минимум 1 строка
     
     logger.info(f"[get_dual_search_keyboard] Реестр ТП: {len(registry_tp_names)}, Структура ТП: {len(structure_tp_names)}")
     
-    # Если есть результаты - добавляем заголовок
-    if registry_tp_names or structure_tp_names:
-        if registry_tp_names and structure_tp_names:
-            keyboard.append(['📋 РЕЕСТР ДОГОВОРОВ:', '🗂️ СТРУКТУРА СЕТИ:'])
-        elif registry_tp_names:
-            keyboard.append(['📋 РЕЕСТР ДОГОВОРОВ:'])
-        else:
-            keyboard.append(['🗂️ СТРУКТУРА СЕТИ:'])
+    # Всегда добавляем заголовок с двумя колонками
+    keyboard.append(['📋 РЕЕСТР ДОГОВОРОВ', '🗂️ СТРУКТУРА СЕТИ'])
     
     # Формируем строки с кнопками для ВСЕХ найденных ТП
     for i in range(max_rows):
@@ -889,6 +893,9 @@ def get_dual_search_keyboard(registry_tp_names: List[str], structure_tp_names: L
             # Обрезаем название если слишком длинное
             display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
             row.append(f'📄 {display_name}')
+        else:
+            # Если нет данных - добавляем неактивную кнопку
+            row.append('➖ Нет данных')
         
         # Кнопка из структуры сети (справа)
         if i < len(structure_tp_names):
@@ -896,9 +903,15 @@ def get_dual_search_keyboard(registry_tp_names: List[str], structure_tp_names: L
             # Обрезаем название если слишком длинное
             display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
             row.append(f'🔌 {display_name}')
+        else:
+            # Если нет данных - добавляем неактивную кнопку
+            row.append('➖ Нет данных')
         
-        if row:
-            keyboard.append(row)
+        keyboard.append(row)
+    
+    # Если совсем нет результатов - добавляем строку с двумя неактивными кнопками
+    if not registry_tp_names and not structure_tp_names:
+        keyboard.append(['➖ Нет результатов', '➖ Нет результатов'])
     
     # Кнопки действий
     keyboard.append(['🔍 Новый поиск'])
@@ -1363,50 +1376,59 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[user_id]['photo_id'] = None
     user_states[user_id]['comment'] = ''
     
-    # Если пришли из поиска - возвращаемся к выбору ВЛ
-    if 'last_search_tp' in user_states[user_id]:
-        user_states[user_id]['state'] = 'send_notification'
-        user_states[user_id]['action'] = 'select_vl'
-        
-        # Перезагружаем данные из справочника для получения списка ВЛ
-        env_key = get_env_key_for_branch(branch, network, is_reference=True)
-        csv_url = os.environ.get(env_key)
-        
-        if csv_url:
-            data = load_csv_from_url(csv_url)
-            results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
-            
-            # Фильтруем по РЭС если нужно
-            user_permissions = get_user_permissions(user_id)
-            user_res = user_permissions.get('res')
-            if user_res and user_res != 'All':
-                results = [r for r in results if r.get('РЭС', '').strip() == user_res]
-            
-            if results:
-                # ВАЖНО: Получаем ВСЕ уникальные ВЛ
-                vl_list = list(set([r['Наименование ВЛ'] for r in results]))
-                vl_list.sort()
-                
-                logger.info(f"[send_notification] После отправки найдено {len(vl_list)} ВЛ для повторной отправки")
-                
-                # Используем новую функцию для создания клавиатуры
-                reply_markup = get_vl_selection_keyboard(vl_list, selected_tp)
-                
-                await update.message.reply_text(
-                    result_text + f"\n\n✨ Можете отправить еще уведомление по этой же ТП:\n📍 ТП: {selected_tp}\n\nВыберите ВЛ:",
-                    reply_markup=reply_markup
-                )
-                return
+    # ВСЕГДА возвращаемся к выбору ВЛ после отправки уведомления
+    user_states[user_id]['state'] = 'send_notification'
+    user_states[user_id]['action'] = 'select_vl'
     
-    # Иначе - стандартное поведение (возврат в меню филиала)
-    user_states[user_id]['state'] = f'branch_{branch}'
-    user_states[user_id]['branch'] = branch
-    user_states[user_id]['network'] = network
+    # Перезагружаем данные из справочника для получения списка ВЛ
+    env_key = get_env_key_for_branch(branch, network, is_reference=True)
+    csv_url = os.environ.get(env_key)
     
-    await update.message.reply_text(
-        result_text,
-        reply_markup=get_branch_menu_keyboard()
-    )
+    if csv_url:
+        data = load_csv_from_url(csv_url)
+        results = search_tp_in_data(selected_tp, data, 'Наименование ТП')
+        
+        # Фильтруем по РЭС если нужно
+        user_permissions = get_user_permissions(user_id)
+        user_res = user_permissions.get('res')
+        if user_res and user_res != 'All':
+            results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+        
+        if results:
+            # ВАЖНО: Получаем ВСЕ уникальные ВЛ
+            vl_list = list(set([r['Наименование ВЛ'] for r in results]))
+            vl_list.sort()
+            
+            logger.info(f"[send_notification] После отправки найдено {len(vl_list)} ВЛ для повторной отправки")
+            
+            # Используем новую функцию для создания клавиатуры
+            reply_markup = get_vl_selection_keyboard(vl_list, selected_tp)
+            
+            await update.message.reply_text(
+                result_text + f"\n\n✨ Можете отправить еще уведомление по этой же ТП:\n📍 ТП: {selected_tp}\n\nВыберите ВЛ:",
+                reply_markup=reply_markup
+            )
+            return
+        else:
+            # Если не удалось загрузить ВЛ - возвращаемся в меню филиала
+            user_states[user_id]['state'] = f'branch_{branch}'
+            user_states[user_id]['branch'] = branch
+            user_states[user_id]['network'] = network
+            
+            await update.message.reply_text(
+                result_text + "\n\n⚠️ Не удалось загрузить список ВЛ для повторной отправки",
+                reply_markup=get_branch_menu_keyboard()
+            )
+    else:
+        # Если нет справочника - возвращаемся в меню филиала
+        user_states[user_id]['state'] = f'branch_{branch}'
+        user_states[user_id]['branch'] = branch
+        user_states[user_id]['network'] = network
+        
+        await update.message.reply_text(
+            result_text,
+            reply_markup=get_branch_menu_keyboard()
+        )
 
 # ==================== ПОКАЗ РЕЗУЛЬТАТОВ ПОИСКА ====================
 
@@ -1511,11 +1533,20 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
         await update.message.reply_text(message, parse_mode='Markdown')
     
     # Используем сохраненный поисковый запрос для кнопки
-    await update.message.reply_text(
-        "Выберите действие:",
-        reply_markup=get_after_search_keyboard(tp_name, search_query)
-    )
-    # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+    # Проверяем, откуда пришли - из двойного поиска или обычного
+    if 'dual_search_results' in user_states[user_id]:
+        # Пришли из двойного поиска - показываем специальную клавиатуру
+        await update.message.reply_text(
+            "Выберите действие:",
+            reply_markup=get_after_dual_search_keyboard()
+        )
+    else:
+        # Обычный поиск - показываем стандартную клавиатуру
+        await update.message.reply_text(
+            "Выберите действие:",
+            reply_markup=get_after_search_keyboard(tp_name, search_query)
+        )
+        # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
