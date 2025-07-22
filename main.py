@@ -128,7 +128,6 @@ BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
 
 
 
-# ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ====================
 
 def normalize_tp_name_advanced(name: str) -> str:
     """Улучшенная нормализация имени ТП для поиска"""
@@ -218,25 +217,31 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
             if all_letters_found:
                 # Теперь проверяем цифровые части
                 if query_digit_parts:
-                    # Объединяем все цифры из запроса
-                    query_all_digits = ''.join(query_digit_parts)
-                    # Объединяем все цифры из ТП
-                    tp_all_digits = ''.join(tp_digit_parts)
+                    # ВАЖНО: Ищем цифры как последовательность в исходной строке
+                    # Чтобы не находить 77 в 3-770 или 9-779
                     
-                    # Проверяем вхождение цифр из запроса в цифры ТП
-                    if query_all_digits in tp_all_digits:
-                        match_found = True
-                    # Или проверяем, что цифры ТП начинаются с цифр запроса
-                    elif tp_all_digits.startswith(query_all_digits):
-                        match_found = True
-                    # Или проверяем частичное совпадение цифровых частей
+                    # Объединяем цифры из запроса
+                    query_digits_str = ''.join(query_digit_parts)
+                    
+                    # Ищем эту последовательность цифр в компактной версии ТП
+                    # но учитываем позиции букв и цифр
+                    if len(query_digit_parts) == 1:
+                        # Если в запросе одна группа цифр (например "77")
+                        # Проверяем, есть ли она как отдельная группа или начало группы в ТП
+                        digit_found = False
+                        for tp_digit in tp_digit_parts:
+                            if tp_digit.startswith(query_digits_str):
+                                digit_found = True
+                                break
+                        if digit_found:
+                            match_found = True
                     else:
-                        # Проверяем каждую цифровую часть
+                        # Если в запросе несколько групп цифр
+                        # Проверяем их последовательно
                         digits_match = True
                         for i, query_digit in enumerate(query_digit_parts):
                             if i < len(tp_digit_parts):
-                                # Проверяем, что цифры из запроса есть в соответствующей части ТП
-                                if not (query_digit in tp_digit_parts[i] or tp_digit_parts[i].startswith(query_digit)):
+                                if not tp_digit_parts[i].startswith(query_digit):
                                     digits_match = False
                                     break
                             else:
@@ -250,10 +255,17 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
         
         # 5. Если в запросе только цифры
         elif query_digit_parts and not query_letter_parts:
-            query_all_digits = ''.join(query_digit_parts)
-            tp_all_digits = ''.join(tp_digit_parts)
+            # Для запроса только с цифрами - ищем как отдельную группу
+            query_digits_str = ''.join(query_digit_parts)
             
-            if query_all_digits in tp_all_digits:
+            # Проверяем каждую группу цифр в ТП
+            digit_found = False
+            for tp_digit in tp_digit_parts:
+                if tp_digit.startswith(query_digits_str):
+                    digit_found = True
+                    break
+            
+            if digit_found:
                 match_found = True
         
         if match_found and tp_name not in seen_tp:
@@ -772,7 +784,7 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
 
 
 # ВАЖНО: Максимальное количество кнопок перед кнопкой "Назад"
-MAX_BUTTONS_BEFORE_BACK = 20  # Telegram позволяет до ~100 кнопок, но для удобства ограничим
+MAX_BUTTONS_BEFORE_BACK = 40  # Telegram позволяет до ~100 кнопок, но для удобства ограничим
 
 def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     """Получить главную клавиатуру в зависимости от прав"""
