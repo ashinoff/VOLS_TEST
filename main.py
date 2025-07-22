@@ -1709,6 +1709,8 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
 
 # ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
+# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
     user_id = str(update.effective_user.id)
@@ -1733,7 +1735,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} нажал на пустую кнопку ➖, игнорируем")
         return
     
-   # Выбор типа рассылки
+    # Выбор типа рассылки
     if state == 'broadcast_choice':
         if text == '❌ Отмена':
             user_states[user_id] = {'state': 'main'}
@@ -1750,35 +1752,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 user_states[user_id] = {'state': 'main'}
             else:
-                user_states[user_id]['state'] = 'broadcast_message'
-                user_states[user_id]['broadcast_type'] = 'bot_users' if '📨' in text else 'all_users'
-                keyboard = [['❌ Отмена']]
-                
-                recipients_info = ""
-                if '📨' in text:
-                    recipients_info = f"\n\n⚠️ Внимание: будут уведомлены только те, кто запускал бота после последнего обновления ({len(bot_users)} пользователей)"
-                else:
-                    recipients_info = f"\n\n📋 Будут уведомлены все пользователи из базы данных ({len(users_cache)} пользователей)"
-                
-                await update.message.reply_text(
-                    "📢 Введите сообщение для массовой рассылки.\n\n"
-                    f"Получатели: {text}"
-                    f"{recipients_info}\n\n"
-                    "Можно использовать Markdown форматирование:\n"
-                    "\\*жирный\\* \\_курсив\\_ \\`код\\`",  # Экранируем звездочки!
-                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-                    parse_mode='Markdown'
-                )
-        return
-              
-                    await update.message.reply_text(
-                        "⚠️ Файл с историей пользователей не найден.\n"
-                        "Эта опция станет доступна после того, как пользователи начнут использовать бота.",
-                        reply_markup=get_main_keyboard(permissions)
-                    )
-                    user_states[user_id] = {'state': 'main'}
-            else:
-                # Для других опций
                 user_states[user_id]['state'] = 'broadcast_message'
                 user_states[user_id]['broadcast_type'] = 'bot_users' if '📨' in text else 'all_users'
                 keyboard = [['❌ Отмена']]
@@ -2300,10 +2273,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"⚡ ВЛ: {selected_vl}\n\n"
                         "📸 Сделайте фото бездоговорного ВОЛС\n\n"
                         "Как отправить фото:\n"
-                        "📱 **Мобильный**: нажмите 📎 → Камера\n"
+                        "📱 Мобильный: нажмите 📎 → Камера\n"
                         "Или выберите действие ниже:",
-                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-                        parse_mode='Markdown'
+                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                     )
         else:
             # Если пришли не из поиска - возвращаемся в меню филиала
@@ -2461,13 +2433,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ['📋 Всем из базы данных'],
                 ['❌ Отмена']
             ]
-            # Убираем parse_mode или экранируем звездочки
             await update.message.reply_text(
                 "📢 Выберите кому отправить рассылку:\n\n"
                 "📨 Всем кто запускал бота - отправка только тем, кто использовал /start после последнего обновления\n\n"
                 "📋 Всем из базы данных - отправка всем пользователям из зон доступа",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                # Убрали parse_mode='Markdown'
             )
     
     # Выбор филиала
@@ -2513,8 +2483,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Выберите документ",
                 reply_markup=get_reference_keyboard()
             )
-            # Уведомление - поиск ТП  
-    # Уведомление - поиск ТП
+            # Уведомление - поиск ТП
     elif state == 'send_notification' and user_states[user_id].get('action') == 'notification_tp':
         branch = user_states[user_id].get('branch')
         network = user_states[user_id].get('network')
@@ -2714,7 +2683,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "• Контакты поддержки\n\n"
                     "Нажмите кнопку ниже для просмотра:",
                     reply_markup=reply_markup
-                    # Убрали parse_mode='Markdown'
                 )
             else:
                 await update.message.reply_text("❌ Ссылка на руководство не настроена в системе")
@@ -2979,111 +2947,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             else:
                 await update.message.reply_text(f"❌ Документ не найден")
-
-# ==================== ОБРАБОТЧИКИ ЛОКАЦИИ И ФОТО ====================
-
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка геолокации"""
-    user_id = str(update.effective_user.id)
-    state = user_states.get(user_id, {}).get('state')
-    
-    if state == 'send_notification' and user_states[user_id].get('action') == 'send_location':
-        location = update.message.location
-        selected_tp = user_states[user_id].get('selected_tp')
-        selected_vl = user_states[user_id].get('selected_vl')
-        
-        # Сохраняем локацию
-        user_states[user_id]['location'] = {
-            'latitude': location.latitude,
-            'longitude': location.longitude
-        }
-        
-        # Переходим к запросу фото
-        user_states[user_id]['action'] = 'request_photo'
-        
-        keyboard = [
-            ['⏭ Пропустить и добавить комментарий'],
-            ['📤 Отправить без фото и комментария'],
-            ['⬅️ Назад']
-        ]
-        
-        # Отправляем анимированную подсказку
-        photo_tips = [
-            "📸 Подготовьте камеру...",
-            "📷 Сфотографируйте бездоговорной ВОЛС...",
-            "💡 Совет: Снимите общий вид и детали"
-        ]
-        
-        tip_msg = await update.message.reply_text(photo_tips[0])
-        
-        for tip in photo_tips[1:]:
-            await asyncio.sleep(1.5)
-            try:
-                await tip_msg.edit_text(tip)
-            except Exception:
-                pass
-        
-        await asyncio.sleep(1.5)
-        await tip_msg.delete()
-        
-        # Отправляем основное сообщение с информацией о выбранных ТП и ВЛ
-        await update.message.reply_text(
-            f"✅ Местоположение получено!\n\n"
-            f"📍 ТП: {selected_tp}\n"
-            f"⚡ ВЛ: {selected_vl}\n\n"
-            "📸 Сделайте фото бездоговорного ВОЛС\n\n"
-            "Как отправить фото:\n"
-            "📱 **Мобильный**: нажмите 📎 → Камера\n"
-            "Или выберите действие ниже:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode='Markdown'
-        )
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка фотографий"""
-    user_id = str(update.effective_user.id)
-    state = user_states.get(user_id, {}).get('state')
-    
-    if state == 'send_notification' and user_states[user_id].get('action') == 'request_photo':
-        # Сохраняем фото
-        photo = update.message.photo[-1]  # Берем фото в максимальном качестве
-        file_id = photo.file_id
-        
-        user_states[user_id]['photo_id'] = file_id
-        user_states[user_id]['action'] = 'add_comment'
-        
-        keyboard = [
-            ['📤 Отправить без комментария'],
-            ['⬅️ Назад']
-        ]
-        
-        selected_tp = user_states[user_id].get('selected_tp')
-        selected_vl = user_states[user_id].get('selected_vl')
-        
-        await update.message.reply_text(
-            f"✅ Фото получено!\n\n"
-            f"📍 ТП: {selected_tp}\n"
-            f"⚡ ВЛ: {selected_vl}\n\n"
-            "💬 Добавьте комментарий к уведомлению или отправьте без комментария:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
-    logger.error(f"Exception while handling an update: {context.error}")
-    
-    try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "⚠️ Произошла ошибка при обработке вашего запроса. Попробуйте еще раз."
-            )
-    except Exception:
-        pass
-    # ЧАСТЬ 5.3 КОНЕЦ
     # ЧАСТЬ 5.3 КОНЕЦ====================================================================================================================
-           
-# ЧАСТЬ ФИНАЛ=======================================================================================================================
-
+    
    
    # ЧАСТЬ ФИНАЛ=======================================================================================================================
 
