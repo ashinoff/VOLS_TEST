@@ -1733,7 +1733,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} нажал на пустую кнопку ➖, игнорируем")
         return
     
-    # Выбор типа рассылки
+   # Выбор типа рассылки
     if state == 'broadcast_choice':
         if text == '❌ Отмена':
             user_states[user_id] = {'state': 'main'}
@@ -1741,8 +1741,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Главное меню",
                 reply_markup=get_main_keyboard(permissions)
             )
-        elif text in ['📨 Всем кто запускал бота', '📱 Всем кто когда-либо писал боту', '📋 Всем из базы данных']:
-            # Проверяем доступность опций
+        elif text in ['📨 Всем кто запускал бота', '📋 Всем из базы данных']:
             if '📨' in text and len(bot_users) == 0:
                 await update.message.reply_text(
                     "⚠️ Пока никто не запускал бота после последнего обновления.\n\n"
@@ -1750,29 +1749,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=get_main_keyboard(permissions)
                 )
                 user_states[user_id] = {'state': 'main'}
-            elif '📱' in text:
-                # Проверяем есть ли файл bot_users.json
-                if os.path.exists(BOT_USERS_FILE):
-                    user_states[user_id]['state'] = 'broadcast_message'
-                    user_states[user_id]['broadcast_type'] = 'all_bot_users'
-                    keyboard = [['❌ Отмена']]
-                    
-                    # Считаем уникальных пользователей из файла
-                    try:
-                        with open(BOT_USERS_FILE, 'r', encoding='utf-8') as f:
-                            saved_users = json.load(f)
-                        user_count = len(saved_users)
-                    except:
-                        user_count = 0
-                    
-                    await update.message.reply_text(
-                        "📢 Введите сообщение для массовой рассылки.\n\n"
-                        f"Получатели: {text}\n"
-                        f"📱 Будут уведомлены все, кто когда-либо использовал бота ({user_count} пользователей)\n\n"
-                        "Можно использовать Markdown форматирование:\n"
-                        "*жирный* _курсив_ `код`",
-                        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                    )
+            else:
+                user_states[user_id]['state'] = 'broadcast_message'
+                user_states[user_id]['broadcast_type'] = 'bot_users' if '📨' in text else 'all_users'
+                keyboard = [['❌ Отмена']]
+                
+                recipients_info = ""
+                if '📨' in text:
+                    recipients_info = f"\n\n⚠️ Внимание: будут уведомлены только те, кто запускал бота после последнего обновления ({len(bot_users)} пользователей)"
+                else:
+                    recipients_info = f"\n\n📋 Будут уведомлены все пользователи из базы данных ({len(users_cache)} пользователей)"
+                
+                await update.message.reply_text(
+                    "📢 Введите сообщение для массовой рассылки.\n\n"
+                    f"Получатели: {text}"
+                    f"{recipients_info}\n\n"
+                    "Можно использовать Markdown форматирование:\n"
+                    "\\*жирный\\* \\_курсив\\_ \\`код\\`",  # Экранируем звездочки!
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+                    parse_mode='Markdown'
+                )
+        return
                 else:
                     await update.message.reply_text(
                         "⚠️ Файл с историей пользователей не найден.\n"
@@ -2461,17 +2458,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id] = {'state': 'broadcast_choice'}
             keyboard = [
                 ['📨 Всем кто запускал бота'],
-                ['📱 Всем кто когда-либо писал боту'],
                 ['📋 Всем из базы данных'],
                 ['❌ Отмена']
             ]
+            # Убираем parse_mode или экранируем звездочки
             await update.message.reply_text(
                 "📢 Выберите кому отправить рассылку:\n\n"
-                "📨 *Всем кто запускал бота* - отправка только тем, кто использовал /start после последнего обновления\n\n"
-                "📱 *Всем кто когда-либо писал боту* - отправка всем, кто хоть раз писал боту (из файла bot_users.json)\n\n"
-                "📋 *Всем из базы данных* - отправка всем пользователям из зон доступа",
-                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-                parse_mode='Markdown'
+                "📨 Всем кто запускал бота - отправка только тем, кто использовал /start после последнего обновления\n\n"
+                "📋 Всем из базы данных - отправка всем пользователям из зон доступа",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                # Убрали parse_mode='Markdown'
             )
     
     # Выбор филиала
@@ -2709,7 +2705,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await update.message.reply_text(
-                    "📖 *Руководство пользователя ВОЛС Ассистент*\n\n"
+                    "📖 Руководство пользователя ВОЛС Ассистент\n\n"
                     f"Версия {BOT_VERSION} • Июль 2025\n\n"
                     "В руководстве вы найдете:\n"
                     "• Пошаговые инструкции по работе\n"
@@ -2717,8 +2713,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "• Ответы на частые вопросы\n"
                     "• Контакты поддержки\n\n"
                     "Нажмите кнопку ниже для просмотра:",
-                    parse_mode='Markdown',
                     reply_markup=reply_markup
+                    # Убрали parse_mode='Markdown'
                 )
             else:
                 await update.message.reply_text("❌ Ссылка на руководство не настроена в системе")
