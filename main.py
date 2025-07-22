@@ -1770,7 +1770,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='Markdown'
                 )
         return
-                else:
+              
                     await update.message.reply_text(
                         "⚠️ Файл с историей пользователей не найден.\n"
                         "Эта опция станет доступна после того, как пользователи начнут использовать бота.",
