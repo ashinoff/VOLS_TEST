@@ -1,7 +1,9 @@
+# requirements.txt
 python-telegram-bot[ext]==20.8
 httpx[http2]~=0.26.0
 pandas==2.2.2
 pytz==2024.1
++ aiofiles
 aiosqlite==0.20.0
 aiosmtplib==3.0.1
 xlsxwriter==3.2.0
