@@ -69,7 +69,7 @@ CSV_CACHE_DIR.mkdir(exist_ok=True)
 http = httpx.AsyncClient(
     http2=True,
     limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
-    timeout=httpx.Timeout(total=15)
+    timeout=httpx.Timeout(15)
 )
 
 def _safe_name(url: str) -> str:
