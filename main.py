@@ -39,6 +39,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 PORT = int(os.environ.get('PORT', 5000))
 ZONES_CSV_URL = os.environ.get('ZONES_CSV_URL')
+MAX_BUTTONS_BEFORE_BACK = 20
 
 # Email настройки
 SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.mail.ru')
@@ -121,9 +122,11 @@ REFERENCE_DOCS = {
 USER_GUIDE_URL = os.environ.get('USER_GUIDE_URL', 'https://your-domain.com/vols-guide')
 
 BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
+
+# ЧАСТЬ 1 ==================== конец==================== ================================================================
 # ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ================================================================
 
-# ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ====================
+
 
 def normalize_tp_name_advanced(name: str) -> str:
     """Улучшенная нормализация имени ТП для поиска"""
@@ -141,16 +144,8 @@ def normalize_tp_name_advanced(name: str) -> str:
     
     return name
 
-def extract_letters_and_numbers(text: str) -> Tuple[str, str]:
-    """Извлекает буквы и цифры из текста отдельно"""
-    # Извлекаем все буквы (русские и английские)
-    letters = ''.join(re.findall(r'[А-ЯA-Zа-яa-z]+', text.upper()))
-    # Извлекаем все цифры
-    numbers = ''.join(re.findall(r'\d+', text))
-    return letters, numbers
-
 def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> List[Dict]:
-    """Улучшенный поиск ТП с поддержкой различных паттернов и строгим учетом букв
+    """Улучшенный поиск ТП с СТРОГОЙ проверкой букв
     ВАЖНО: Возвращает ВСЕ найденные записи, а не только уникальные ТП!"""
     if not tp_query or not data:
         return []
@@ -158,12 +153,9 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
     # Нормализуем запрос
     normalized_query = normalize_tp_name_advanced(tp_query)
     
-    # Извлекаем буквы и цифры из запроса
-    query_letters, query_numbers = extract_letters_and_numbers(normalized_query)
-    has_letters = bool(query_letters)
-    has_numbers = bool(query_numbers)
-    
-    logger.info(f"[search_tp] Запрос: '{tp_query}' -> Буквы: '{query_letters}', Цифры: '{query_numbers}'")
+    # Извлекаем буквы и цифры из запроса для строгой проверки
+    query_letters = re.findall(r'[А-ЯA-Z]+', normalized_query)
+    query_digits = re.findall(r'\d+', normalized_query)
     
     # Паттерн для поиска вида "буквы-цифры-буквы-цифры" (например ВЛ-10-АД-2)
     pattern_match = re.match(r'([А-ЯA-Z]+)-?(\d+)-?([А-ЯA-Z]+)?-?(\d+)?', normalized_query)
@@ -176,12 +168,28 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
             continue
             
         normalized_tp = normalize_tp_name_advanced(tp_name)
-        tp_letters, tp_numbers = extract_letters_and_numbers(normalized_tp)
         
-        # НОВОЕ: Если в запросе есть буквы - проверяем их наличие в ТП
-        if has_letters:
-            # Проверяем, содержит ли ТП ВСЕ буквы из запроса
-            if not all(letter in tp_letters for letter in query_letters):
+        # СТРОГАЯ ПРОВЕРКА: если в запросе есть буквы, они ДОЛЖНЫ совпадать
+        if query_letters:
+            tp_letters = re.findall(r'[А-ЯA-Z]+', normalized_tp)
+            
+            # Проверяем, что ВСЕ буквы из запроса есть в названии ТП в правильном порядке
+            letters_match = True
+            letter_pos = 0
+            
+            for query_letter in query_letters:
+                found = False
+                for i in range(letter_pos, len(tp_letters)):
+                    if query_letter == tp_letters[i]:
+                        found = True
+                        letter_pos = i + 1
+                        break
+                
+                if not found:
+                    letters_match = False
+                    break
+            
+            if not letters_match:
                 continue
         
         # 1. Точное совпадение
@@ -189,41 +197,46 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
             results.append(row)
             continue
         
-        # 2. Частичное совпадение (с учетом букв)
-        if normalized_query in normalized_tp:
-            results.append(row)
-            continue
-        
-        # 3. Поиск по паттерну (для ВЛ-10-АД-2 и подобных)
-        if pattern_match:
-            # Извлекаем части из запроса
-            query_parts = [p for p in pattern_match.groups() if p]
-            
-            # Ищем эти части в названии ТП
-            tp_pattern = re.findall(r'([А-ЯA-Z]+)-?(\d+)-?([А-ЯA-Z]+)?-?(\d+)?', normalized_tp)
-            
-            for tp_match in tp_pattern:
-                tp_parts = [p for p in tp_match if p]
+        # 2. Строгое частичное совпадение (с учетом букв)
+        if query_letters:
+            # Если есть буквы в запросе - ищем точное вхождение с буквами
+            if normalized_query in normalized_tp:
+                results.append(row)
+                continue
                 
-                # Сравниваем части
-                if len(query_parts) <= len(tp_parts):
-                    # Проверяем совпадение всех частей запроса
-                    match = True
-                    for i, query_part in enumerate(query_parts):
-                        if i < len(tp_parts) and query_part.upper() != tp_parts[i].upper():
-                            match = False
-                            break
+            # Поиск по паттерну с учетом букв
+            if pattern_match:
+                query_parts = [p for p in pattern_match.groups() if p]
+                tp_pattern = re.findall(r'([А-ЯA-Z]+)-?(\d+)-?([А-ЯA-Z]+)?-?(\d+)?', normalized_tp)
+                
+                for tp_match in tp_pattern:
+                    tp_parts = [p for p in tp_match if p]
                     
-                    if match:
-                        results.append(row)
-                        break
-        
-        # 4. Поиск только по цифрам (если НЕТ букв в запросе)
-        if not has_letters and has_numbers:
-            if query_numbers in tp_numbers:
+                    # СТРОГОЕ сравнение частей
+                    if len(query_parts) <= len(tp_parts):
+                        match = True
+                        for i, query_part in enumerate(query_parts):
+                            if i < len(tp_parts) and query_part != tp_parts[i]:
+                                match = False
+                                break
+                        
+                        if match:
+                            results.append(row)
+                            break
+        else:
+            # Если в запросе НЕТ букв - старый метод поиска по цифрам
+            if normalized_query in normalized_tp:
+                results.append(row)
+                continue
+                
+            # Поиск только по цифрам
+            query_digits_str = ''.join(query_digits)
+            tp_digits_str = ''.join(re.findall(r'\d+', normalized_tp))
+            
+            if query_digits_str and query_digits_str in tp_digits_str:
                 results.append(row)
     
-    logger.info(f"[search_tp] Найдено записей: {len(results)}")
+    logger.info(f"[search_tp_in_data_advanced] Запрос: '{tp_query}', найдено записей: {len(results)}")
     return results
 
 # Оставляем старую функцию для совместимости
@@ -401,8 +414,10 @@ async def preload_csv_files():
             if isinstance(result, Exception):
                 logger.error(f"❌ Ошибка загрузки {csv_urls[i]}: {result}")
 
-# чАСТЬ 2 КОНЕЦ    ============================================================================================================    
-# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ========================================================================================
+
+# чАСТЬ 2 КОНЕЦ    ==================================================================================================================================================    
+# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
+
 
 def get_moscow_time():
     """Получить текущее время в Москве"""
@@ -420,11 +435,22 @@ def save_bot_users():
                 'first_name': data.get('first_name', '')
             }
         
-        with open(BOT_USERS_FILE, 'w', encoding='utf-8') as f:
+        # Создаем временный файл для безопасного сохранения
+        temp_file = BOT_USERS_FILE + '.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"Сохранено {len(bot_users)} пользователей бота в {BOT_USERS_FILE}")
+        
+        # Переименовываем временный файл в основной
+        if os.path.exists(temp_file):
+            if os.path.exists(BOT_USERS_FILE):
+                os.remove(BOT_USERS_FILE)
+            os.rename(temp_file, BOT_USERS_FILE)
+            
+        logger.info(f"✅ Сохранено {len(bot_users)} пользователей бота в {BOT_USERS_FILE}")
+        return True
     except Exception as e:
-        logger.error(f"Ошибка сохранения данных пользователей бота: {e}")
+        logger.error(f"❌ Ошибка сохранения данных пользователей бота: {e}")
+        return False
 
 def load_bot_users():
     """Загрузить данные о пользователях бота из файла"""
@@ -455,11 +481,11 @@ def load_bot_users():
                 except Exception as e:
                     logger.error(f"Ошибка загрузки данных пользователя {uid}: {e}")
             
-            logger.info(f"Загружено {len(bot_users)} пользователей бота из файла")
+            logger.info(f"✅ Загружено {len(bot_users)} пользователей бота из файла")
         else:
-            logger.info(f"Файл {BOT_USERS_FILE} не найден, начинаем с пустого списка")
+            logger.info(f"📄 Файл {BOT_USERS_FILE} не найден, начинаем с пустого списка")
     except Exception as e:
-        logger.error(f"Ошибка загрузки данных пользователей бота: {e}")
+        logger.error(f"❌ Ошибка загрузки данных пользователей бота: {e}")
         bot_users = {}
 
 def update_user_activity(user_id: str):
@@ -713,10 +739,15 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     env_key = f"{branch_key}_URL{suffix}"
     logger.info(f"Итоговый ключ переменной окружения: {env_key}")
     return env_key
-    # ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
+
+    
+# ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
 # ЧАСТЬ 4 === ФУНКЦИИ КЛАВИАТУР ==================================================================================================================
 
-# ==================== ФУНКЦИИ КЛАВИАТУР ====================
+
+
+# ВАЖНО: Максимальное количество кнопок перед кнопкой "Назад"
+MAX_BUTTONS_BEFORE_BACK = 20  # Telegram позволяет до ~100 кнопок, но для удобства ограничим
 
 def get_main_keyboard(permissions: Dict) -> ReplyKeyboardMarkup:
     """Получить главную клавиатуру в зависимости от прав"""
@@ -896,60 +927,69 @@ def get_report_action_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для двойного поиска - показывает ВСЕ найденные ТП с ограничением
+# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для двойного поиска - показывает ВСЕ найденные ТП
 def get_dual_search_keyboard(registry_tp_names: List[str], structure_tp_names: List[str]) -> ReplyKeyboardMarkup:
     """Клавиатура с результатами поиска из двух справочников
-    ВАЖНО: Показывает найденные ТП из обоих справочников с раздельными колонками
-    Ограничивает количество строк для корректного отображения"""
+    ВАЖНО: Показывает найденные ТП с учетом ограничения на количество"""
     keyboard = []
     
-    # Ограничиваем количество ТП для отображения (максимум 15 строк)
-    MAX_ROWS = 15
-    registry_limited = registry_tp_names[:MAX_ROWS]
-    structure_limited = structure_tp_names[:MAX_ROWS]
+    # Ограничиваем количество отображаемых ТП
+    max_items_per_column = MAX_BUTTONS_BEFORE_BACK // 2  # Делим на 2 колонки
+    
+    # Если слишком много результатов - обрезаем и информируем
+    registry_truncated = len(registry_tp_names) > max_items_per_column
+    structure_truncated = len(structure_tp_names) > max_items_per_column
+    
+    registry_tp_display = registry_tp_names[:max_items_per_column]
+    structure_tp_display = structure_tp_names[:max_items_per_column]
     
     # Определяем максимальное количество строк
-    max_rows = max(len(registry_limited), len(structure_limited), 1)  # Минимум 1 строка
+    max_rows = max(len(registry_tp_display), len(structure_tp_display), 1)
     
-    logger.info(f"[get_dual_search_keyboard] Реестр ТП: {len(registry_tp_names)} (показано: {len(registry_limited)})")
-    logger.info(f"[get_dual_search_keyboard] Структура ТП: {len(structure_tp_names)} (показано: {len(structure_limited)})")
+    logger.info(f"[get_dual_search_keyboard] Реестр ТП: {len(registry_tp_names)} (показано: {len(registry_tp_display)}), Структура ТП: {len(structure_tp_names)} (показано: {len(structure_tp_display)})")
     
     # Всегда добавляем заголовок с двумя колонками
-    keyboard.append(['📋 РЕЕСТР ДОГОВОРОВ', '🗂️ СТРУКТУРА СЕТИ'])
+    header_left = '📋 РЕЕСТР ДОГОВОРОВ'
+    header_right = '🗂️ СТРУКТУРА СЕТИ'
+    
+    if registry_truncated:
+        header_left += f' ({len(registry_tp_display)} из {len(registry_tp_names)})'
+    if structure_truncated:
+        header_right += f' ({len(structure_tp_display)} из {len(structure_tp_names)})'
+        
+    keyboard.append([header_left, header_right])
     
     # Формируем строки с кнопками для найденных ТП
     for i in range(max_rows):
         row = []
         
         # Кнопка из реестра договоров (слева)
-        if i < len(registry_limited):
-            tp_name = registry_limited[i]
+        if i < len(registry_tp_display):
+            tp_name = registry_tp_display[i]
             # Обрезаем название если слишком длинное
             display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
             row.append(f'📄 {display_name}')
         else:
-            # Если нет данных - добавляем просто тире
             row.append('➖')
         
         # Кнопка из структуры сети (справа)
-        if i < len(structure_limited):
-            tp_name = structure_limited[i]
+        if i < len(structure_tp_display):
+            tp_name = structure_tp_display[i]
             # Обрезаем название если слишком длинное
             display_name = tp_name[:20] + '...' if len(tp_name) > 20 else tp_name
             row.append(f'📍 {display_name}')
         else:
-            # Если нет данных - добавляем просто тире
             row.append('➖')
         
         keyboard.append(row)
     
     # Если совсем нет результатов - добавляем строку с двумя тире
-    if not registry_limited and not structure_limited:
+    if not registry_tp_names and not structure_tp_names:
         keyboard.append(['➖', '➖'])
     
-    # Информация если результатов больше чем показано
-    if len(registry_tp_names) > MAX_ROWS or len(structure_tp_names) > MAX_ROWS:
-        keyboard.append([f'⚠️ Показаны первые {MAX_ROWS} результатов'])
+    # Если были обрезаны результаты - добавляем информационное сообщение
+    if registry_truncated or structure_truncated:
+        keyboard.append(['⚠️ Показаны не все результаты'])
     
     # Кнопки действий
     keyboard.append(['🔍 Новый поиск'])
@@ -957,59 +997,60 @@ def get_dual_search_keyboard(registry_tp_names: List[str], structure_tp_names: L
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для выбора ТП при уведомлении с ограничением
+# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для выбора ТП при уведомлении
 def get_tp_selection_keyboard(tp_list: List[str]) -> ReplyKeyboardMarkup:
-    """Клавиатура для выбора ТП
-    ВАЖНО: Показывает найденные ТП с ограничением"""
+    """Клавиатура для выбора ТП с ограничением количества"""
     keyboard = []
     
     # Ограничиваем количество ТП
-    MAX_TP = 20
-    tp_limited = tp_list[:MAX_TP]
+    tp_truncated = len(tp_list) > MAX_BUTTONS_BEFORE_BACK
+    tp_display = tp_list[:MAX_BUTTONS_BEFORE_BACK]
     
-    logger.info(f"[get_tp_selection_keyboard] Всего ТП: {len(tp_list)}, показано: {len(tp_limited)}")
+    logger.info(f"[get_tp_selection_keyboard] Создаю клавиатуру для {len(tp_list)} ТП (показано: {len(tp_display)})")
+    
+    # Если обрезали - добавляем информацию
+    if tp_truncated:
+        keyboard.append([f'⚠️ Показано {len(tp_display)} из {len(tp_list)} ТП'])
     
     # Добавляем ТП как кнопки
-    for tp in tp_limited:
+    for tp in tp_display:
         keyboard.append([tp])
-    
-    # Информация если ТП больше чем показано
-    if len(tp_list) > MAX_TP:
-        keyboard.append([f'⚠️ Показаны первые {MAX_TP} из {len(tp_list)} ТП'])
-        keyboard.append(['💡 Уточните поиск для лучших результатов'])
     
     keyboard.append(['⬅️ Назад'])
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для выбора ВЛ с ограничением
+# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для выбора ВЛ
 def get_vl_selection_keyboard(vl_list: List[str], tp_name: str) -> ReplyKeyboardMarkup:
-    """Клавиатура для выбора ВЛ
-    ВАЖНО: Показывает найденные ВЛ для выбранной ТП с ограничением"""
+    """Клавиатура для выбора ВЛ с ограничением количества"""
     keyboard = []
     
     # Ограничиваем количество ВЛ
-    MAX_VL = 20
-    vl_list_sorted = sorted(vl_list)
-    vl_limited = vl_list_sorted[:MAX_VL]
+    vl_truncated = len(vl_list) > MAX_BUTTONS_BEFORE_BACK
+    vl_display = vl_list[:MAX_BUTTONS_BEFORE_BACK]
     
-    logger.info(f"[get_vl_selection_keyboard] Всего ВЛ: {len(vl_list)}, показано: {len(vl_limited)}")
+    logger.info(f"[get_vl_selection_keyboard] Создаю клавиатуру для {len(vl_list)} ВЛ на ТП {tp_name} (показано: {len(vl_display)})")
+    
+    # Если обрезали - добавляем информацию
+    if vl_truncated:
+        keyboard.append([f'⚠️ Показано {len(vl_display)} из {len(vl_list)} ВЛ'])
+    
+    # Сортируем ВЛ для удобства
+    vl_display_sorted = sorted(vl_display)
     
     # Добавляем ВЛ как кнопки
-    for vl in vl_limited:
+    for vl in vl_display_sorted:
         keyboard.append([vl])
-    
-    # Информация если ВЛ больше чем показано
-    if len(vl_list) > MAX_VL:
-        keyboard.append([f'⚠️ Показаны первые {MAX_VL} из {len(vl_list)} ВЛ'])
     
     keyboard.append(['🔍 Новый поиск'])
     keyboard.append(['⬅️ Назад'])
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
  
     #чАСТЬ 4 КОНЕЦ ==============================================================================================================================================
  # ЧАСТЬ 5.1 ========= EMAIL ФУНКЦИИ ============================================================================================================================
+
 async def send_email(to_email: str, subject: str, body: str, attachment_data: BytesIO = None, attachment_name: str = None):
     """Отправка email через SMTP"""
     if not SMTP_EMAIL or not SMTP_PASSWORD:
@@ -1082,17 +1123,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Размер users_cache: {len(users_cache)}")
     
     current_time = get_moscow_time()
-    if user_id not in bot_users:
+    is_new_user = user_id not in bot_users
+    
+    if is_new_user:
         bot_users[user_id] = {
             'first_start': current_time,
             'last_start': current_time,
             'username': update.effective_user.username or '',
             'first_name': update.effective_user.first_name or ''
         }
+        logger.info(f"🆕 Новый пользователь добавлен: {user_id}")
     else:
         bot_users[user_id]['last_start'] = current_time
+        logger.info(f"🔄 Обновлен последний запуск для: {user_id}")
     
-    save_bot_users()
+    # ВАЖНО: Сохраняем немедленно после обновления
+    if save_bot_users():
+        logger.info(f"✅ Данные пользователей сохранены немедленно (всего: {len(bot_users)})")
+    else:
+        logger.error("❌ Не удалось сохранить данные пользователей немедленно")
     
     permissions = get_user_permissions(user_id)
     
@@ -1108,8 +1157,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_states[user_id] = {'state': 'main'}
     
+    # Приветственное сообщение
+    welcome_text = f"👋 Добро пожаловать, {permissions.get('name_without_surname', permissions.get('name', 'Пользователь'))}!"
+    
+    # Если это новый пользователь - добавляем дополнительную информацию
+    if is_new_user:
+        welcome_text += "\n\n🎉 Вы успешно активировали бота!"
+        welcome_text += f"\n📊 Всего пользователей: {len(bot_users)}"
+    
     await update.message.reply_text(
-        f"👋 Добро пожаловать, {permissions.get('name_without_surname', permissions.get('name', 'Пользователь'))}!",
+        welcome_text,
         reply_markup=get_main_keyboard(permissions)
     )
 
@@ -1138,7 +1195,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ZONES_CSV_URL: {'✅ Задан' if ZONES_CSV_URL else '❌ Не задан'}
 • WEBHOOK_URL: {'✅ Задан' if WEBHOOK_URL else '❌ Не задан'}
 
-⚠️ Данные о запусках бота сбрасываются после перезапуска!"""
+⚠️ Данные о запусках бота сохраняются в файл {BOT_USERS_FILE}"""
     
     await update.message.reply_text(status_text)
 
@@ -1199,6 +1256,7 @@ async def check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Пользователь заблокировал бота\n"
             f"• Неверный ID"
         )
+# ЧАСТЬ 5.1 КОНЕЦ =====================================================================================================
         # ЧАСТЬ 5.1 КОНЕЦ =====================================================================================================
 # =ЧАСТЬ 5.2 ====== ОТПРАВКА УВЕДОМЛЕНИЙ ====================================================================================
 
@@ -2994,471 +3052,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ЧАСТЬ ФИНАЛ=======================================================================================================================
 
    
-    # Уведомление - поиск ТП
-    elif state == 'send_notification' and user_states[user_id].get('action') == 'notification_tp':
-        branch = user_states[user_id].get('branch')
-        network = user_states[user_id].get('network')
-        
-        # Проверяем права пользователя - может у него указан конкретный филиал
-        user_permissions = get_user_permissions(user_id)
-        user_branch = user_permissions.get('branch')
-        user_res = user_permissions.get('res')
-        
-        # Если у пользователя указан конкретный филиал в правах - используем его БЕЗ нормализации
-        if user_branch and user_branch != 'All':
-            branch = user_branch  # Используем как есть из прав (например "Сочинский")
-            logger.info(f"Используем филиал из прав пользователя для уведомления БЕЗ изменений: {branch}")
-        
-        notification_messages = [
-            "🔍 Поиск в справочнике...",
-            "📋 Проверяю базу данных...",
-            "🌐 Загружаю информацию...",
-            ]
-        
-        loading_msg = await update.message.reply_text(notification_messages[0])
-        
-        for msg_text in notification_messages[1:]:
-            await asyncio.sleep(0.4)
-            try:
-                await loading_msg.edit_text(msg_text)
-            except Exception:
-                pass
-        
-        env_key = get_env_key_for_branch(branch, network, is_reference=True)
-        csv_url = os.environ.get(env_key)
-        
-        logger.info(f"Загрузка справочника для уведомления:")
-        logger.info(f"  Филиал: {branch}")
-        logger.info(f"  Сеть: {network}")
-        logger.info(f"  Ключ переменной: {env_key}")
-        logger.info(f"  URL справочника: {csv_url}")
-        
-        if not csv_url:
-            await loading_msg.delete()
-            await update.message.reply_text(f"❌ Справочник для филиала {branch} не найден")
-            return
-        
-        data = load_csv_from_url(csv_url)
-        results = search_tp_in_data(text, data, 'Наименование ТП')
-        
-        # Если у пользователя указан конкретный РЭС - фильтруем результаты
-        if user_res and user_res != 'All':
-            filtered_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
-            
-            await loading_msg.delete()
-            
-            if not filtered_results:
-                if results:
-                    await update.message.reply_text(
-                        f"❌ В {user_res} РЭС запрашиваемая ТП не найдена.\n\n"
-                        f"ℹ️ Данная ТП присутствует в других РЭС филиала {branch}.\n"
-                        "Для отправки уведомления выберите ТП из вашего РЭС."
-                    )
-                else:
-                    await update.message.reply_text(
-                        f"❌ ТП не найдена в {user_res} РЭС.\n\n"
-                        "Попробуйте другой запрос."
-                    )
-                return
-            
-            results = filtered_results
-        else:
-            await loading_msg.delete()
-            
-            if not results:
-                await update.message.reply_text("❌ ТП не найдено. Попробуйте другой запрос.")
-                return
-        
-        # ВАЖНО: Получаем ВСЕ уникальные ТП
-        tp_list = list(set([r['Наименование ТП'] for r in results]))
-        
-        logger.info(f"[handle_message] Для уведомления найдено {len(tp_list)} уникальных ТП")
-        
-        user_states[user_id]['notification_results'] = results
-        user_states[user_id]['action'] = 'select_notification_tp'
-        
-        # Используем функцию для создания клавиатуры
-        reply_markup = get_tp_selection_keyboard(tp_list)
-        
-        await update.message.reply_text(
-            f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
-            reply_markup=reply_markup
-        )
-    
-    # Выбор ТП для уведомления
-    elif state == 'send_notification' and user_states[user_id].get('action') == 'select_notification_tp':
-        results = user_states[user_id].get('notification_results', [])
-        filtered_results = [r for r in results if r['Наименование ТП'] == text]
-        
-        if filtered_results:
-            user_states[user_id]['selected_tp'] = text
-            user_states[user_id]['tp_data'] = filtered_results[0]
-            
-            # ВАЖНО: Получаем ВСЕ уникальные ВЛ для выбранной ТП
-            vl_list = list(set([r['Наименование ВЛ'] for r in filtered_results]))
-            vl_list.sort()
-            
-            logger.info(f"[handle_message] Для ТП {text} найдено {len(vl_list)} уникальных ВЛ")
-            
-            user_states[user_id]['action'] = 'select_vl'
-            
-            # Используем функцию для создания клавиатуры
-            reply_markup = get_vl_selection_keyboard(vl_list, text)
-            
-            await update.message.reply_text(
-                f"📨 Отправка уведомления по ТП: {text}\n"
-                f"📊 Найдено ВЛ: {len(vl_list)}\n\n"
-                f"Выберите ВЛ:",
-                reply_markup=reply_markup
-            )
-    
-    # Выбор ВЛ
-    elif state == 'send_notification' and user_states[user_id].get('action') == 'select_vl':
-        # Обработка кнопки "🔍 Новый поиск"
-        if text == '🔍 Новый поиск':
-            user_states[user_id]['state'] = 'search_tp'
-            user_states[user_id]['action'] = 'search'
-            # Очищаем данные предыдущего поиска
-            if 'last_search_tp' in user_states[user_id]:
-                del user_states[user_id]['last_search_tp']
-            if 'last_search_query' in user_states[user_id]:
-                del user_states[user_id]['last_search_query']
-            keyboard = [['⬅️ Назад']]
-            await update.message.reply_text(
-                "🔍 Введите наименование ТП для поиска:",
-                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            )
-            return
-            
-        user_states[user_id]['selected_vl'] = text
-        user_states[user_id]['action'] = 'send_location'
-        
-        keyboard = [[KeyboardButton("📍 Отправить местоположение", request_location=True)]]
-        keyboard.append(['⬅️ Назад'])
-        
-        selected_tp = user_states[user_id].get('selected_tp', '')
-        selected_vl = text
-        
-        await update.message.reply_text(
-            f"✅ Выбрана ВЛ: {selected_vl}\n"
-            f"📍 ТП: {selected_tp}\n\n"
-            "Теперь отправьте ваше местоположение:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-    
-    # Обработка действий при отправке уведомления с фото
-    elif state == 'send_notification':
-        action = user_states[user_id].get('action')
-        
-        if action == 'request_photo' and text == '⏭ Пропустить и добавить комментарий':
-            user_states[user_id]['action'] = 'add_comment'
-            keyboard = [
-                ['📤 Отправить без комментария'],
-                ['⬅️ Назад']
-            ]
-            
-            selected_tp = user_states[user_id].get('selected_tp')
-            selected_vl = user_states[user_id].get('selected_vl')
-            
-            await update.message.reply_text(
-                f"📍 ТП: {selected_tp}\n"
-                f"⚡ ВЛ: {selected_vl}\n\n"
-                "💬 Введите комментарий к уведомлению:",
-                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            )
-        
-        elif action == 'request_photo' and text == '📤 Отправить без фото и комментария':
-            await send_notification(update, context)
-        
-        elif action == 'add_comment' and text == '📤 Отправить без комментария':
-            await send_notification(update, context)
-        
-        elif action == 'add_comment' and text not in ['⬅️ Назад', '📤 Отправить без комментария']:
-            user_states[user_id]['comment'] = text
-            await send_notification(update, context)
-    
-    # Персональные настройки
-    elif state == 'settings':
-        if text == '📖 Руководство пользователя':
-            if USER_GUIDE_URL:
-                keyboard = [[InlineKeyboardButton("📖 Открыть руководство", url=USER_GUIDE_URL)]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await update.message.reply_text(
-                    "📖 *Руководство пользователя ВОЛС Ассистент*\n\n"
-                    f"Версия {BOT_VERSION} • Июль 2025\n\n"
-                    "В руководстве вы найдете:\n"
-                    "• Пошаговые инструкции по работе\n"
-                    "• Описание всех функций\n"
-                    "• Ответы на частые вопросы\n"
-                    "• Контакты поддержки\n\n"
-                    "Нажмите кнопку ниже для просмотра:",
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
-            else:
-                await update.message.reply_text("❌ Ссылка на руководство не настроена в системе")
-        
-        elif text == 'ℹ️ Моя информация':
-            user_data = users_cache.get(user_id, {})
-            
-            info_text = f"""ℹ️ Ваша информация:
+   # ЧАСТЬ ФИНАЛ=======================================================================================================================
 
-👤 ФИО: {user_data.get('name', 'Не указано')}
-📝 Имя (для приветствия): {user_data.get('name_without_surname', 'Не указано')}
-🆔 Telegram ID: {user_id}
-📧 Email: {user_data.get('email', 'Не указан')}
+# ==================== ДОБАВЛЯЕМ НЕДОСТАЮЩИЕ ФУНКЦИИ ====================
 
-🔐 Права доступа:
-• Видимость: {user_data.get('visibility', '-')}
-• Филиал: {user_data.get('branch', '-')}
-• РЭС: {user_data.get('res', '-')}
-• Ответственность: {user_data.get('responsible', 'Не назначена')}"""
-            
-            await update.message.reply_text(info_text)
-    
-    # Действия с документами
-    elif state == 'document_actions':
-        if text == '📧 Отправить себе на почту':
-            user_data = users_cache.get(user_id, {})
-            user_email = user_data.get('email', '')
-            
-            if not user_email:
-                await update.message.reply_text(
-                    "❌ У вас не указан email в системе.\n"
-                    "Обратитесь к администратору для добавления email.",
-                    reply_markup=get_document_action_keyboard()
-                )
-                return
-            
-            doc_info = user_states[user_id].get('current_document')
-            if not doc_info:
-                await update.message.reply_text(
-                    "❌ Документ не найден",
-                    reply_markup=get_document_action_keyboard()
-                )
-                return
-            
-            sending_msg = await update.message.reply_text("📧 Отправляю документ на почту...")
-            
-            try:
-                doc_data = doc_info.get('data')
-                if not doc_data:
-                    document = await get_cached_document(doc_info['name'], doc_info['url'])
-                    if document:
-                        doc_data = document.getvalue()
-                
-                if doc_data:
-                    document_io = BytesIO(doc_data)
-                    
-                    subject = f"Документ: {doc_info['name']}"
-                    body = f"""Добрый день, {user_data.get('name', 'Пользователь')}!
-
-Вы запросили отправку документа "{doc_info['name']}" из бота ВОЛС Ассистент.
-
-Документ прикреплен к данному письму.
-
-С уважением,
-Бот ВОЛС Ассистент"""
-                    
-                    success = await send_email(
-                        user_email,
-                        subject,
-                        body,
-                        document_io,
-                        doc_info['filename']
-                    )
-                    
-                    await sending_msg.delete()
-                    
-                    if success:
-                        await update.message.reply_text(
-                            f"✅ Документ успешно отправлен на {user_email}",
-                            reply_markup=get_document_action_keyboard()
-                        )
-                    else:
-                        await update.message.reply_text(
-                            "❌ Не удалось отправить документ. Попробуйте позже.",
-                            reply_markup=get_document_action_keyboard()
-                        )
-                else:
-                    await sending_msg.delete()
-                    await update.message.reply_text(
-                        "❌ Не удалось получить документ",
-                        reply_markup=get_document_action_keyboard()
-                    )
-                    
-            except Exception as e:
-                logger.error(f"Ошибка отправки документа на почту: {e}")
-                await sending_msg.delete()
-                await update.message.reply_text(
-                    "❌ Ошибка при отправке документа",
-                    reply_markup=get_document_action_keyboard()
-                )
-            return
-    
-    # Действия с отчетами
-    elif state == 'report_actions':
-        if text == '📧 Отправить себе на почту':
-            user_data = users_cache.get(user_id, {})
-            user_email = user_data.get('email', '')
-            
-            if not user_email:
-                await update.message.reply_text(
-                    "❌ У вас не указан email в системе.\n"
-                    "Обратитесь к администратору для добавления email.",
-                    reply_markup=get_report_action_keyboard()
-                )
-                return
-            
-            report_info = user_states[user_id].get('last_report')
-            if not report_info:
-                await update.message.reply_text(
-                    "❌ Отчет не найден", 
-                    reply_markup=get_report_action_keyboard()
-                )
-                return
-            
-            sending_msg = await update.message.reply_text("📧 Отправляю отчет на почту...")
-            
-            try:
-                report_data = BytesIO(report_info['data'])
-                
-                subject = f"Отчет: {report_info['filename'].replace('.xlsx', '')}"
-                body = f"""Добрый день, {user_data.get('name', 'Пользователь')}!
-
-Вы запросили отправку отчета из бота ВОЛС Ассистент.
-
-{report_info['caption']}
-
-Отчет прикреплен к данному письму.
-
-С уважением,
-Бот ВОЛС Ассистент"""
-                
-                success = await send_email(
-                    user_email,
-                    subject,
-                    body,
-                    report_data,
-                    report_info['filename']
-                )
-                
-                await sending_msg.delete()
-                
-                if success:
-                    await update.message.reply_text(
-                        f"✅ Отчет успешно отправлен на {user_email}",
-                        reply_markup=get_report_action_keyboard()
-                    )
-                else:
-                    await update.message.reply_text(
-                        "❌ Не удалось отправить отчет. Попробуйте позже.",
-                        reply_markup=get_report_action_keyboard()
-                    )
-                    
-            except Exception as e:
-                logger.error(f"Ошибка отправки отчета на почту: {e}")
-                await sending_msg.delete()
-                await update.message.reply_text(
-                    "❌ Ошибка при отправке отчета",
-                    reply_markup=get_report_action_keyboard()
-                )
-            return
-    
-    # Отчеты
-    elif state == 'reports':
-        if text == '📊 Уведомления РОССЕТИ КУБАНЬ':
-            await generate_report(update, context, 'RK', permissions)
-        elif text == '📊 Уведомления РОССЕТИ ЮГ':
-            await generate_report(update, context, 'UG', permissions)
-        elif text == '📈 Активность РОССЕТИ КУБАНЬ':
-            await generate_activity_report(update, context, 'RK', permissions)
-        elif text == '📈 Активность РОССЕТИ ЮГ':
-            await generate_activity_report(update, context, 'UG', permissions)
-    
-    # Справка
-    elif state == 'reference':
-        if text.startswith('📄 ') or text.startswith('📊 '):
-            button_text = text[2:].strip()
-            
-            doc_mapping = {
-                'План выручки ВОЛС 24-26': 'План по выручке ВОЛС на ВЛ 24-26 годы',
-                'Акт инвентаризации': 'Форма акта инвентаризации',
-                'Гарантийное письмо': 'Форма гарантийного письма',
-                'Претензионное письмо': 'Форма претензионного письма',
-                'Регламент ВОЛС': 'Регламент ВОЛС',
-                'Отчет по контрагентам': 'Отчет по контрагентам'
-            }
-            
-            doc_name = doc_mapping.get(button_text, button_text)
-            
-            if doc_name not in REFERENCE_DOCS:
-                for full_name in REFERENCE_DOCS.keys():
-                    if button_text in full_name or full_name in button_text:
-                        doc_name = full_name
-                        break
-            
-            doc_url = REFERENCE_DOCS.get(doc_name)
-            
-            if doc_url:
-                loading_msg = await update.message.reply_text("⏳ Загружаю документ...")
-                
-                try:
-                    document = await get_cached_document(doc_name, doc_url)
-                    
-                    if document:
-                        if 'spreadsheet' in doc_url or 'xlsx' in doc_url:
-                            extension = 'xlsx'
-                        elif 'document' in doc_url or 'pdf' in doc_url:
-                            extension = 'pdf'
-                        else:
-                            extension = 'pdf'
-                        
-                        filename = f"{doc_name}.{extension}"
-                        
-                        await update.message.reply_document(
-                            document=InputFile(document, filename=filename),
-                            caption=f"📄 {doc_name}"
-                        )
-                        
-                        await loading_msg.delete()
-                        
-                        previous_state = user_states[user_id].get('previous_state')
-                        branch = user_states[user_id].get('branch')
-                        network = user_states[user_id].get('network')
-                        
-                        user_states[user_id]['state'] = 'document_actions'
-                        user_states[user_id]['previous_state'] = previous_state
-                        user_states[user_id]['branch'] = branch
-                        user_states[user_id]['network'] = network
-                        user_states[user_id]['current_document'] = {
-                            'name': doc_name,
-                            'url': doc_url,
-                            'filename': filename,
-                            'data': document.getvalue()
-                        }
-                        
-                        await update.message.reply_text(
-                            "Документ загружен",
-                            reply_markup=get_document_action_keyboard()
-                        )
-                    else:
-                        await loading_msg.delete()
-                        await update.message.reply_text(
-                            f"❌ Не удалось загрузить документ.\n\n"
-                            f"Вы можете открыть его по ссылке:\n{doc_url}"
-                        )
-                        
-                except Exception as e:
-                    logger.error(f"Ошибка обработки документа {doc_name}: {e}")
-                    await loading_msg.delete()
-                    await update.message.reply_text(
-                        f"❌ Ошибка загрузки документа.\n\n"
-                        f"Вы можете открыть его по ссылке:\n{doc_url}"
-                    )
-            else:
-                await update.message.reply_text(f"❌ Документ не найден")
+# ЧАСТЬ ФИНАЛ=======================================================================================================================
 
 # ==================== ОБРАБОТЧИКИ ЛОКАЦИИ И ФОТО ====================
 
@@ -3838,7 +3436,7 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
 ✅ Активных (запускали бота): {active_users}
 ⏸️ Не запускали: {never_started}
 
-⚠️ Данные о запусках сохраняются только с момента последнего обновления бота"""
+💾 Данные сохранены в файле: {BOT_USERS_FILE}"""
     
     await update.message.reply_document(
         document=InputFile(buffer, filename=filename),
@@ -3847,7 +3445,18 @@ async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Уведомление о перезапуске бота"""
-    loading_msg = await update.message.reply_text("🔄 Отправляю уведомления о перезапуске...")
+    # Проверяем, есть ли пользователи для уведомления
+    if not bot_users:
+        await update.message.reply_text(
+            "⚠️ Нет пользователей для уведомления.\n"
+            "Пока никто не активировал бота командой /start после последнего обновления."
+        )
+        return
+        
+    loading_msg = await update.message.reply_text(
+        f"🔄 Отправляю уведомления о перезапуске...\n"
+        f"Всего пользователей: {len(bot_users)}"
+    )
     
     success_count = 0
     failed_count = 0
@@ -3861,6 +3470,7 @@ async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Для продолжения работы используйте команду /start"""
     
+    # Отправляем по одному сообщению с задержкой
     for uid in bot_users.keys():
         try:
             await context.bot.send_message(
@@ -3868,22 +3478,34 @@ async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=message_text
             )
             success_count += 1
-            await asyncio.sleep(0.1)  # Защита от лимитов
+            await asyncio.sleep(0.1)  # Защита от лимитов Telegram
+            
+            # Обновляем статус каждые 10 сообщений
+            if success_count % 10 == 0:
+                try:
+                    await loading_msg.edit_text(
+                        f"🔄 Отправляю уведомления...\n"
+                        f"✅ Отправлено: {success_count}/{len(bot_users)}"
+                    )
+                except:
+                    pass
+                    
         except Exception as e:
             logger.error(f"Не удалось отправить уведомление пользователю {uid}: {e}")
             failed_count += 1
     
     await loading_msg.delete()
     
-    result_text = f"""✅ Уведомление о перезапуске отправлено
+    result_text = f"""✅ Уведомление о перезапуске отправлено!
 
+📊 Статистика:
 📨 Успешно: {success_count}
-❌ Не доставлено: {failed_count}"""
+❌ Не доставлено: {failed_count}
+👥 Всего пользователей: {len(bot_users)}"""
     
     await update.message.reply_text(result_text)
 
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-   async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка массовой рассылки"""
     user_id = str(update.effective_user.id)
     text = update.message.text
@@ -3899,39 +3521,24 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     broadcast_type = user_states[user_id].get('broadcast_type', 'bot_users')
     
-    loading_msg = await update.message.reply_text("📤 Начинаю рассылку...")
+    # Определяем получателей
+    if broadcast_type == 'bot_users':
+        recipients = list(bot_users.keys())
+        recipients_name = "пользователям, запускавшим бота"
+    else:
+        recipients = list(users_cache.keys())
+        recipients_name = "всем пользователям из базы"
+    
+    loading_msg = await update.message.reply_text(
+        f"📤 Начинаю рассылку {recipients_name}...\n"
+        f"Всего получателей: {len(recipients)}"
+    )
     
     success_count = 0
     failed_count = 0
     
-    # Определяем получателей
-    if broadcast_type == 'bot_users':
-        # Только те, кто запускал бота в текущей сессии
-        recipients = list(bot_users.keys())
-    elif broadcast_type == 'all_bot_users':
-        # Все, кто когда-либо писал боту (из файла)
-        recipients = set()
-        
-        # Добавляем из текущей сессии
-        recipients.update(bot_users.keys())
-        
-        # Добавляем из файла
-        if os.path.exists(BOT_USERS_FILE):
-            try:
-                with open(BOT_USERS_FILE, 'r', encoding='utf-8') as f:
-                    saved_users = json.load(f)
-                recipients.update(saved_users.keys())
-            except Exception as e:
-                logger.error(f"Ошибка чтения файла пользователей: {e}")
-        
-        recipients = list(recipients)
-        logger.info(f"Всего уникальных пользователей для рассылки: {len(recipients)}")
-    else:
-        # Все из базы данных
-        recipients = list(users_cache.keys())
-    
     # Отправляем сообщения
-    for uid in recipients:
+    for i, uid in enumerate(recipients):
         try:
             await context.bot.send_message(
                 chat_id=uid,
@@ -3940,6 +3547,17 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             success_count += 1
             await asyncio.sleep(0.1)  # Защита от лимитов
+            
+            # Обновляем статус каждые 10 сообщений
+            if (i + 1) % 10 == 0:
+                try:
+                    await loading_msg.edit_text(
+                        f"📤 Отправляю сообщения...\n"
+                        f"✅ Отправлено: {success_count}/{len(recipients)}"
+                    )
+                except:
+                    pass
+                    
         except Exception as e:
             logger.error(f"Не удалось отправить сообщение пользователю {uid}: {e}")
             failed_count += 1
@@ -3949,9 +3567,11 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Результат
     result_text = f"""✅ Рассылка завершена!
 
+📊 Статистика:
 📨 Успешно отправлено: {success_count}
 ❌ Не доставлено: {failed_count}
-📊 Всего получателей: {len(recipients)}"""
+👥 Всего получателей: {len(recipients)}
+📝 Тип рассылки: {recipients_name}"""
     
     user_states[user_id] = {'state': 'main'}
     permissions = get_user_permissions(user_id)
@@ -3965,7 +3585,7 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def preload_documents():
     """Предзагрузка документов в кэш при старте"""
-    logger.info("Начинаем предзагрузку документов...")
+    logger.info("📄 Начинаем предзагрузку документов...")
     
     for doc_name, doc_url in REFERENCE_DOCS.items():
         if doc_url:
@@ -3976,13 +3596,13 @@ async def preload_documents():
             except Exception as e:
                 logger.error(f"❌ Ошибка загрузки {doc_name}: {e}")
     
-    logger.info("Предзагрузка документов завершена")
+    logger.info("✅ Предзагрузка документов завершена")
 
 async def refresh_users_data():
     """Периодическое обновление данных пользователей"""
     while True:
         await asyncio.sleep(300)  # Каждые 5 минут
-        logger.info("Обновляем данные пользователей...")
+        logger.info("🔄 Обновляем данные пользователей...")
         try:
             load_users_data()
             logger.info("✅ Данные пользователей обновлены")
@@ -3992,15 +3612,22 @@ async def refresh_users_data():
 async def save_bot_users_periodically():
     """Периодическое сохранение данных о пользователях бота"""
     while True:
-        await asyncio.sleep(600)  # Каждые 10 минут
-        save_bot_users()
-        logger.info("Автосохранение данных пользователей бота")
+        await asyncio.sleep(120)  # Каждые 2 минуты вместо 10
+        
+        # Сохраняем только если есть что сохранять
+        if bot_users:
+            if save_bot_users():
+                logger.info(f"⏰ Автосохранение: сохранено {len(bot_users)} пользователей")
+            else:
+                logger.error("❌ Ошибка автосохранения данных пользователей")
+        else:
+            logger.debug("⏰ Автосохранение: нет данных для сохранения")
 
 async def refresh_documents_cache():
     """Периодическое обновление кэша документов"""
     while True:
         await asyncio.sleep(3600)  # Каждый час
-        logger.info("Обновляем кэш документов...")
+        logger.info("🔄 Обновляем кэш документов...")
         
         for doc_name in list(documents_cache.keys()):
             doc_url = REFERENCE_DOCS.get(doc_name)
@@ -4041,12 +3668,46 @@ async def setup_webhook(application: Application, webhook_url: str):
     except Exception as e:
         logger.error(f"❌ Ошибка настройки вебхука: {e}")
 
+# ==================== ИНИЦИАЛИЗАЦИЯ ====================
+
+async def init_and_start():
+    """Инициализация и запуск фоновых задач"""
+    logger.info("=" * 60)
+    logger.info(f"🚀 ЗАПУСК БОТА ВОЛС АССИСТЕНТ v{BOT_VERSION}")
+    logger.info("=" * 60)
+    
+    # Загружаем документы
+    logger.info("📄 Начинаем предзагрузку документов...")
+    await preload_documents()
+    
+    # Загружаем CSV файлы
+    logger.info("📊 Начинаем предзагрузку CSV файлов...")
+    await preload_csv_files()
+    
+    # Выводим статистику
+    logger.info("=" * 60)
+    logger.info("📈 СТАТИСТИКА ПОСЛЕ ЗАГРУЗКИ:")
+    logger.info(f"👥 Пользователей в базе (CSV): {len(users_cache)}")
+    logger.info(f"🔄 Пользователей запускавших бота: {len(bot_users)}")
+    logger.info(f"📁 CSV файлов в кэше: {len(csv_cache)}")
+    logger.info(f"📄 Документов в кэше: {len(documents_cache)}")
+    logger.info("=" * 60)
+    
+    # Запускаем фоновые задачи
+    logger.info("⚙️ Запускаем фоновые задачи...")
+    asyncio.create_task(refresh_documents_cache())
+    asyncio.create_task(refresh_users_data())
+    asyncio.create_task(save_bot_users_periodically())
+    
+    logger.info("✅ Инициализация завершена!")
+
 # ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
 
 if __name__ == '__main__':
     def signal_handler(sig, frame):
-        logger.info("Получен сигнал остановки, сохраняем данные...")
+        logger.info("🛑 Получен сигнал остановки, сохраняем данные...")
         save_bot_users()
+        logger.info("💾 Данные сохранены. Завершение работы.")
         sys.exit(0)
     
     signal.signal(signal.SIGINT, signal_handler)
@@ -4073,17 +3734,10 @@ if __name__ == '__main__':
     application.add_error_handler(error_handler)
     
     # Загружаем данные
+    logger.info("📊 Загружаем данные пользователей...")
     load_users_data()
+    logger.info("💾 Загружаем историю запусков бота...")
     load_bot_users()
-    
-    async def init_and_start():
-        """Инициализация и запуск фоновых задач"""
-        await preload_documents()
-        await preload_csv_files()  # Предзагрузка CSV
-        
-        asyncio.create_task(refresh_documents_cache())
-        asyncio.create_task(refresh_users_data())
-        asyncio.create_task(save_bot_users_periodically())
     
     async def post_init(application: Application) -> None:
         """Вызывается после инициализации приложения"""
@@ -4091,8 +3745,9 @@ if __name__ == '__main__':
     
     async def post_shutdown(application: Application) -> None:
         """Вызывается при остановке приложения"""
-        logger.info("Сохраняем данные перед остановкой...")
+        logger.info("🛑 Сохраняем данные перед остановкой...")
         save_bot_users()
+        logger.info("✅ Данные сохранены")
     
     application.post_init = post_init
     if hasattr(application, 'post_shutdown'):
