@@ -39,7 +39,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 PORT = int(os.environ.get('PORT', 5000))
 ZONES_CSV_URL = os.environ.get('ZONES_CSV_URL')
-MAX_BUTTONS_BEFORE_BACK = 20
+MAX_BUTTONS_BEFORE_BACK = 40
 
 # Email настройки
 SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.mail.ru')
@@ -123,10 +123,12 @@ USER_GUIDE_URL = os.environ.get('USER_GUIDE_URL', 'https://your-domain.com/vols-
 
 BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
 
-# ЧАСТЬ 1 ==================== конец==================== ================================================================
-# ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ================================================================
+# ЧАСТЬ 1 ==================== конец==================== ============================================================================================================
+# ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ============================================================================================================
 
 
+
+# ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ====================
 
 def normalize_tp_name_advanced(name: str) -> str:
     """Улучшенная нормализация имени ТП для поиска"""
@@ -145,22 +147,23 @@ def normalize_tp_name_advanced(name: str) -> str:
     return name
 
 def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> List[Dict]:
-    """Улучшенный поиск ТП с СТРОГОЙ проверкой букв
-    ВАЖНО: Возвращает ВСЕ найденные записи, а не только уникальные ТП!"""
+    """Гибкий поиск ТП с поддержкой частичных совпадений
+    Примеры: для ТП-ТР-7-774 найдет по запросам ТПТР77, ТР774, тр-777, тр7-774"""
     if not tp_query or not data:
         return []
     
     # Нормализуем запрос
     normalized_query = normalize_tp_name_advanced(tp_query)
     
-    # Извлекаем буквы и цифры из запроса для строгой проверки
-    query_letters = re.findall(r'[А-ЯA-Z]+', normalized_query)
-    query_digits = re.findall(r'\d+', normalized_query)
+    # Создаем версию запроса без дефисов и пробелов для гибкого поиска
+    query_compact = normalized_query.replace('-', '').replace(' ', '')
     
-    # Паттерн для поиска вида "буквы-цифры-буквы-цифры" (например ВЛ-10-АД-2)
-    pattern_match = re.match(r'([А-ЯA-Z]+)-?(\d+)-?([А-ЯA-Z]+)?-?(\d+)?', normalized_query)
+    # Извлекаем все буквенные и цифровые части
+    query_letter_parts = re.findall(r'[А-ЯA-Z]+', query_compact)
+    query_digit_parts = re.findall(r'\d+', query_compact)
     
     results = []
+    seen_tp = set()  # Для избежания дубликатов
     
     for row in data:
         tp_name = row.get(column, '')
@@ -168,73 +171,94 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
             continue
             
         normalized_tp = normalize_tp_name_advanced(tp_name)
+        tp_compact = normalized_tp.replace('-', '').replace(' ', '')
         
-        # СТРОГАЯ ПРОВЕРКА: если в запросе есть буквы, они ДОЛЖНЫ совпадать
-        if query_letters:
-            tp_letters = re.findall(r'[А-ЯA-Z]+', normalized_tp)
-            
-            # Проверяем, что ВСЕ буквы из запроса есть в названии ТП в правильном порядке
-            letters_match = True
-            letter_pos = 0
-            
-            for query_letter in query_letters:
-                found = False
-                for i in range(letter_pos, len(tp_letters)):
-                    if query_letter == tp_letters[i]:
-                        found = True
-                        letter_pos = i + 1
-                        break
-                
-                if not found:
-                    letters_match = False
-                    break
-            
-            if not letters_match:
-                continue
+        # Извлекаем буквенные и цифровые части из названия ТП
+        tp_letter_parts = re.findall(r'[А-ЯA-Z]+', tp_compact)
+        tp_digit_parts = re.findall(r'\d+', tp_compact)
         
-        # 1. Точное совпадение
+        # 1. Точное совпадение (с учетом дефисов)
         if normalized_query == normalized_tp:
-            results.append(row)
+            if tp_name not in seen_tp:
+                results.append(row)
+                seen_tp.add(tp_name)
             continue
         
-        # 2. Строгое частичное совпадение (с учетом букв)
-        if query_letters:
-            # Если есть буквы в запросе - ищем точное вхождение с буквами
-            if normalized_query in normalized_tp:
+        # 2. Точное совпадение без дефисов
+        if query_compact == tp_compact:
+            if tp_name not in seen_tp:
                 results.append(row)
-                continue
-                
-            # Поиск по паттерну с учетом букв
-            if pattern_match:
-                query_parts = [p for p in pattern_match.groups() if p]
-                tp_pattern = re.findall(r'([А-ЯA-Z]+)-?(\d+)-?([А-ЯA-Z]+)?-?(\d+)?', normalized_tp)
-                
-                for tp_match in tp_pattern:
-                    tp_parts = [p for p in tp_match if p]
-                    
-                    # СТРОГОЕ сравнение частей
-                    if len(query_parts) <= len(tp_parts):
-                        match = True
-                        for i, query_part in enumerate(query_parts):
-                            if i < len(tp_parts) and query_part != tp_parts[i]:
-                                match = False
-                                break
-                        
-                        if match:
-                            results.append(row)
-                            break
-        else:
-            # Если в запросе НЕТ букв - старый метод поиска по цифрам
-            if normalized_query in normalized_tp:
+                seen_tp.add(tp_name)
+            continue
+        
+        # 3. Поиск вхождения компактной версии
+        if query_compact in tp_compact:
+            if tp_name not in seen_tp:
                 results.append(row)
-                continue
-                
-            # Поиск только по цифрам
-            query_digits_str = ''.join(query_digits)
-            tp_digits_str = ''.join(re.findall(r'\d+', normalized_tp))
+                seen_tp.add(tp_name)
+            continue
+        
+        # 4. Гибкий поиск по частям
+        match_found = False
+        
+        # Проверяем буквенные части
+        if query_letter_parts:
+            # Ищем все буквенные части запроса в названии ТП
+            all_letters_found = True
+            for query_letters in query_letter_parts:
+                letter_found = False
+                for tp_letters in tp_letter_parts:
+                    if query_letters in tp_letters or tp_letters in query_letters:
+                        letter_found = True
+                        break
+                if not letter_found:
+                    all_letters_found = False
+                    break
             
-            if query_digits_str and query_digits_str in tp_digits_str:
-                results.append(row)
+            if all_letters_found:
+                # Теперь проверяем цифровые части
+                if query_digit_parts:
+                    # Объединяем все цифры из запроса
+                    query_all_digits = ''.join(query_digit_parts)
+                    # Объединяем все цифры из ТП
+                    tp_all_digits = ''.join(tp_digit_parts)
+                    
+                    # Проверяем вхождение цифр из запроса в цифры ТП
+                    if query_all_digits in tp_all_digits:
+                        match_found = True
+                    # Или проверяем, что цифры ТП начинаются с цифр запроса
+                    elif tp_all_digits.startswith(query_all_digits):
+                        match_found = True
+                    # Или проверяем частичное совпадение цифровых частей
+                    else:
+                        # Проверяем каждую цифровую часть
+                        digits_match = True
+                        for i, query_digit in enumerate(query_digit_parts):
+                            if i < len(tp_digit_parts):
+                                # Проверяем, что цифры из запроса есть в соответствующей части ТП
+                                if not (query_digit in tp_digit_parts[i] or tp_digit_parts[i].startswith(query_digit)):
+                                    digits_match = False
+                                    break
+                            else:
+                                digits_match = False
+                                break
+                        if digits_match:
+                            match_found = True
+                else:
+                    # Если в запросе нет цифр, но все буквы найдены
+                    match_found = True
+        
+        # 5. Если в запросе только цифры
+        elif query_digit_parts and not query_letter_parts:
+            query_all_digits = ''.join(query_digit_parts)
+            tp_all_digits = ''.join(tp_digit_parts)
+            
+            if query_all_digits in tp_all_digits:
+                match_found = True
+        
+        if match_found and tp_name not in seen_tp:
+            results.append(row)
+            seen_tp.add(tp_name)
     
     logger.info(f"[search_tp_in_data_advanced] Запрос: '{tp_query}', найдено записей: {len(results)}")
     return results
@@ -413,6 +437,7 @@ async def preload_csv_files():
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.error(f"❌ Ошибка загрузки {csv_urls[i]}: {result}")
+
 
 
 # чАСТЬ 2 КОНЕЦ    ==================================================================================================================================================    
