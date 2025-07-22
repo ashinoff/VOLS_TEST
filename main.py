@@ -1200,7 +1200,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Если это новый пользователь - добавляем дополнительную информацию
     if is_new_user:
         welcome_text += "\n\n🎉 Вы успешно активировали бота!"
-        welcome_text += f"\n📊 Всего пользователей: {len(bot_users)}"
+        
     
     await update.message.reply_text(
         welcome_text,
