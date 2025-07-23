@@ -3503,6 +3503,531 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ЧАСТЬ ФИНАЛ - ОПТИМИЗИРОВАННАЯ ИНИЦИАЛИЗАЦИЯ =======================================================
 
+# ЧАСТЬ ФИНАЛ - ОПТИМИЗИРОВАННАЯ ИНИЦИАЛИЗАЦИЯ =======================================================
+
+# ==================== ОБРАБОТЧИКИ ЛОКАЦИИ И ФОТО ====================
+
+async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка геолокации"""
+    user_id = str(update.effective_user.id)
+    state = user_states.get(user_id, {}).get('state')
+    
+    if state == 'send_notification' and user_states[user_id].get('action') == 'send_location':
+        location = update.message.location
+        selected_tp = user_states[user_id].get('selected_tp')
+        selected_vl = user_states[user_id].get('selected_vl')
+        
+        # Сохраняем локацию
+        user_states[user_id]['location'] = {
+            'latitude': location.latitude,
+            'longitude': location.longitude
+        }
+        
+        # Переходим к запросу фото
+        user_states[user_id]['action'] = 'request_photo'
+        
+        keyboard = [
+            ['⏭ Пропустить и добавить комментарий'],
+            ['📤 Отправить без фото и комментария'],
+            ['⬅️ Назад']
+        ]
+        
+        # Отправляем анимированную подсказку
+        photo_tips = [
+            "📸 Подготовьте камеру...",
+            "📷 Сфотографируйте бездоговорной ВОЛС...",
+            "💡 Совет: Снимите общий вид и детали"
+        ]
+        
+        tip_msg = await update.message.reply_text(photo_tips[0])
+        
+        for tip in photo_tips[1:]:
+            await asyncio.sleep(1.5)
+            try:
+                await tip_msg.edit_text(tip)
+            except Exception:
+                pass
+        
+        await asyncio.sleep(1.5)
+        await tip_msg.delete()
+        
+        # Отправляем основное сообщение с информацией о выбранных ТП и ВЛ
+        await update.message.reply_text(
+            f"✅ Местоположение получено!\n\n"
+            f"📍 ТП: {selected_tp}\n"
+            f"⚡ ВЛ: {selected_vl}\n\n"
+            "📸 Сделайте фото бездоговорного ВОЛС\n\n"
+            "Как отправить фото:\n"
+            "📱 **Мобильный**: нажмите 📎 → Камера\n"
+            "Или выберите действие ниже:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+            parse_mode='Markdown'
+        )
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка фотографий"""
+    user_id = str(update.effective_user.id)
+    state = user_states.get(user_id, {}).get('state')
+    
+    if state == 'send_notification' and user_states[user_id].get('action') == 'request_photo':
+        # Сохраняем фото
+        photo = update.message.photo[-1]  # Берем фото в максимальном качестве
+        file_id = photo.file_id
+        
+        user_states[user_id]['photo_id'] = file_id
+        user_states[user_id]['action'] = 'add_comment'
+        
+        keyboard = [
+            ['📤 Отправить без комментария'],
+            ['⬅️ Назад']
+        ]
+        
+        selected_tp = user_states[user_id].get('selected_tp')
+        selected_vl = user_states[user_id].get('selected_vl')
+        
+        await update.message.reply_text(
+            f"✅ Фото получено!\n\n"
+            f"📍 ТП: {selected_tp}\n"
+            f"⚡ ВЛ: {selected_vl}\n\n"
+            "💬 Добавьте комментарий к уведомлению или отправьте без комментария:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
+    logger.error(f"Exception while handling an update: {context.error}")
+    
+    try:
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ Произошла ошибка при обработке вашего запроса. Попробуйте еще раз."
+            )
+    except Exception:
+        pass
+
+# ==================== ДОБАВЛЯЕМ НЕДОСТАЮЩИЕ ФУНКЦИИ ====================
+
+async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
+    """Генерация отчета по уведомлениям"""
+    loading_msg = await update.message.reply_text("📊 Генерирую отчет...")
+    
+    # Фильтруем уведомления
+    notifications = notifications_storage.get(network, [])
+    
+    if not notifications:
+        await loading_msg.delete()
+        await update.message.reply_text(
+            f"📊 Нет данных для отчета по {'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'}"
+        )
+        return
+    
+    # Создаем DataFrame - БЕЗ ID!
+    report_data = []
+    for notif in notifications:
+        report_data.append({
+            'Филиал': notif['branch'],
+            'РЭС': notif['res'],
+            'ТП': notif['tp'],
+            'ВЛ': notif['vl'],
+            'Отправитель': notif['sender_name'],
+            'Получатель': notif['recipient_name'],
+            'Дата и время': notif['datetime'],
+            'Координаты': notif['coordinates'],
+            'Комментарий': notif['comment'],
+            'Фото': 'Да' if notif['has_photo'] else 'Нет'  # Преобразуем в Да/Нет
+        })
+    
+    df = pd.DataFrame(report_data)
+    
+    # Создаем Excel файл
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='Уведомления', index=False)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Уведомления']
+        
+        # Форматирование
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#4472C4',
+            'font_color': 'white',
+            'border': 1
+        })
+        
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+        
+        # Автоподбор ширины колонок
+        for i, col in enumerate(df.columns):
+            # Безопасно вычисляем максимальную длину
+            try:
+                max_len = df[col].astype(str).str.len().max()
+                # Проверяем на NaN
+                if pd.isna(max_len):
+                    max_len = 10
+                column_len = max(int(max_len), len(col)) + 2
+            except:
+                column_len = len(col) + 2
+            
+            worksheet.set_column(i, i, column_len)
+    
+    buffer.seek(0)
+    
+    # Отправляем файл
+    network_name = 'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'
+    filename = f"Уведомления_{network_name}_{get_moscow_time().strftime('%d.%m.%Y_%H%M')}.xlsx"
+    
+    await loading_msg.delete()
+    
+    caption = f"📊 Отчет по уведомлениям {network_name}\n"
+    caption += f"Период: все время\n"
+    caption += f"Всего уведомлений: {len(notifications)}"
+    
+    await update.message.reply_document(
+        document=InputFile(buffer, filename=filename),
+        caption=caption
+    )
+    
+    # Сохраняем информацию об отчете
+    user_id = str(update.effective_user.id)
+    user_states[user_id]['state'] = 'report_actions'
+    user_states[user_id]['last_report'] = {
+        'filename': filename,
+        'caption': caption,
+        'data': buffer.getvalue()
+    }
+    
+    await update.message.reply_text(
+        "Отчет сгенерирован",
+        reply_markup=get_report_action_keyboard()
+    )
+
+async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
+    """Генерация отчета по активности"""
+    loading_msg = await update.message.reply_text("📊 Генерирую отчет активности...")
+    
+    # Собираем данные об активности - БЕЗ ID!
+    activity_data = []
+    for uid, activity in user_activity.items():
+        user_data = users_cache.get(uid, {})
+        if network == 'RK' and user_data.get('visibility') in ['All', 'RK']:
+            activity_data.append({
+                'ФИО': user_data.get('name', 'Неизвестный'),
+                'Филиал': user_data.get('branch', '-'),
+                'РЭС': user_data.get('res', '-'),
+                'Последняя активность': activity['last_activity'].strftime('%d.%m.%Y %H:%M'),
+                'Количество уведомлений': activity['count']
+            })
+        elif network == 'UG' and user_data.get('visibility') in ['All', 'UG']:
+            activity_data.append({
+                'ФИО': user_data.get('name', 'Неизвестный'),
+                'Филиал': user_data.get('branch', '-'),
+                'РЭС': user_data.get('res', '-'),
+                'Последняя активность': activity['last_activity'].strftime('%d.%m.%Y %H:%M'),
+                'Количество уведомлений': activity['count']
+            })
+    
+    if not activity_data:
+        await loading_msg.delete()
+        await update.message.reply_text(
+            f"📊 Нет данных по активности для {'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'}"
+        )
+        return
+    
+    # Создаем DataFrame
+    df = pd.DataFrame(activity_data)
+    
+    # Создаем Excel файл
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='Активность', index=False)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Активность']
+        
+        # Форматирование
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#70AD47',
+            'font_color': 'white',
+            'border': 1
+        })
+        
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+        
+        # Автоподбор ширины колонок
+        for i, col in enumerate(df.columns):
+            # Безопасно вычисляем максимальную длину
+            try:
+                max_len = df[col].astype(str).str.len().max()
+                # Проверяем на NaN
+                if pd.isna(max_len):
+                    max_len = 10
+                column_len = max(int(max_len), len(col)) + 2
+            except:
+                column_len = len(col) + 2
+            
+            worksheet.set_column(i, i, column_len)
+    
+    buffer.seek(0)
+    
+    # Отправляем файл
+    network_name = 'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'
+    filename = f"Активность_{network_name}_{get_moscow_time().strftime('%d.%m.%Y_%H%M')}.xlsx"
+    
+    await loading_msg.delete()
+    
+    caption = f"📈 Отчет по активности пользователей {network_name}\n"
+    caption += f"Всего активных пользователей: {len(activity_data)}"
+    
+    await update.message.reply_document(
+        document=InputFile(buffer, filename=filename),
+        caption=caption
+    )
+    
+    # Сохраняем информацию об отчете
+    user_id = str(update.effective_user.id)
+    user_states[user_id]['state'] = 'report_actions'
+    user_states[user_id]['last_report'] = {
+        'filename': filename,
+        'caption': caption,
+        'data': buffer.getvalue()
+    }
+    
+    await update.message.reply_text(
+        "Отчет сгенерирован",
+        reply_markup=get_report_action_keyboard()
+    )
+
+async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Генерация отчета о статусе пользователей"""
+    loading_msg = await update.message.reply_text("🔄 Проверяю статус пользователей...")
+    
+    ping_data = []
+    total_users = len(users_cache)
+    active_users = 0
+    blocked_users = 0
+    never_started = 0
+    
+    for uid, user_data in users_cache.items():
+        status = "❓ Неизвестно"
+        last_activity = "-"
+        
+        # Проверяем, запускал ли пользователь бота
+        if uid in bot_users:
+            last_start = bot_users[uid]['last_start']
+            last_activity = last_start.strftime('%d.%m.%Y %H:%M')
+            status = "✅ Активен"
+            active_users += 1
+        else:
+            status = "⏸️ Не запускал"
+            never_started += 1
+        
+        ping_data.append({
+            'ID': uid,
+            'ФИО': user_data.get('name', 'Неизвестный'),
+            'Филиал': user_data.get('branch', '-'),
+            'РЭС': user_data.get('res', '-'),
+            'Статус': status,
+            'Последний запуск': last_activity
+        })
+    
+    # Создаем DataFrame
+    df = pd.DataFrame(ping_data)
+    
+    # Создаем Excel файл
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='Статус пользователей', index=False)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Статус пользователей']
+        
+        # Форматирование
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#FFC000',
+            'font_color': 'black',
+            'border': 1
+        })
+        
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+        
+        # Автоподбор ширины колонок
+        for i, col in enumerate(df.columns):
+            # Безопасно вычисляем максимальную длину
+            try:
+                max_len = df[col].astype(str).str.len().max()
+                # Проверяем на NaN
+                if pd.isna(max_len):
+                    max_len = 10
+                column_len = max(int(max_len), len(col)) + 2
+            except:
+                column_len = len(col) + 2
+            
+            worksheet.set_column(i, i, column_len)
+    
+    buffer.seek(0)
+    
+    # Отправляем файл
+    filename = f"Статус_пользователей_{get_moscow_time().strftime('%d.%m.%Y_%H%M')}.xlsx"
+    
+    await loading_msg.delete()
+    
+    caption = f"""📊 Статус пользователей бота
+
+👥 Всего пользователей: {total_users}
+✅ Активных (запускали бота): {active_users}
+⏸️ Не запускали: {never_started}
+
+💾 Данные сохранены в файле: {BOT_USERS_FILE}"""
+    
+    await update.message.reply_document(
+        document=InputFile(buffer, filename=filename),
+        caption=caption
+    )
+
+async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Уведомление о перезапуске бота"""
+    # Проверяем, есть ли пользователи для уведомления
+    if not bot_users:
+        await update.message.reply_text(
+            "⚠️ Нет пользователей для уведомления.\n"
+            "Пока никто не активировал бота командой /start после последнего обновления."
+        )
+        return
+        
+    loading_msg = await update.message.reply_text(
+        f"🔄 Отправляю уведомления о перезапуске...\n"
+        f"Всего пользователей: {len(bot_users)}"
+    )
+    
+    success_count = 0
+    failed_count = 0
+    
+    message_text = """🔄 Бот ВОЛС Ассистент был обновлен!
+
+✨ Что нового:
+• Улучшена стабильность работы
+• Оптимизирована скорость загрузки данных
+• Исправлены мелкие ошибки
+
+Для продолжения работы используйте команду /start"""
+    
+    # Отправляем по одному сообщению с задержкой
+    for uid in bot_users.keys():
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=message_text
+            )
+            success_count += 1
+            await asyncio.sleep(0.1)  # Защита от лимитов Telegram
+            
+            # Обновляем статус каждые 10 сообщений
+            if success_count % 10 == 0:
+                try:
+                    await loading_msg.edit_text(
+                        f"🔄 Отправляю уведомления...\n"
+                        f"✅ Отправлено: {success_count}/{len(bot_users)}"
+                    )
+                except:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление пользователю {uid}: {e}")
+            failed_count += 1
+    
+    await loading_msg.delete()
+    
+    result_text = f"""✅ Уведомление о перезапуске отправлено!
+
+📊 Статистика:
+📨 Успешно: {success_count}
+❌ Не доставлено: {failed_count}
+👥 Всего пользователей: {len(bot_users)}"""
+    
+    await update.message.reply_text(result_text)
+
+async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка массовой рассылки"""
+    user_id = str(update.effective_user.id)
+    text = update.message.text
+    
+    if text == '❌ Отмена':
+        user_states[user_id] = {'state': 'main'}
+        permissions = get_user_permissions(user_id)
+        await update.message.reply_text(
+            "Рассылка отменена",
+            reply_markup=get_main_keyboard(permissions)
+        )
+        return
+    
+    broadcast_type = user_states[user_id].get('broadcast_type', 'bot_users')
+    
+    # Определяем получателей
+    if broadcast_type == 'bot_users':
+        recipients = list(bot_users.keys())
+        recipients_name = "пользователям, запускавшим бота"
+    else:
+        recipients = list(users_cache.keys())
+        recipients_name = "всем пользователям из базы"
+    
+    loading_msg = await update.message.reply_text(
+        f"📤 Начинаю рассылку {recipients_name}...\n"
+        f"Всего получателей: {len(recipients)}"
+    )
+    
+    success_count = 0
+    failed_count = 0
+    
+    # Отправляем сообщения
+    for i, uid in enumerate(recipients):
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=text,
+                parse_mode='Markdown'
+            )
+            success_count += 1
+            await asyncio.sleep(0.1)  # Защита от лимитов
+            
+            # Обновляем статус каждые 10 сообщений
+            if (i + 1) % 10 == 0:
+                try:
+                    await loading_msg.edit_text(
+                        f"📤 Отправляю сообщения...\n"
+                        f"✅ Отправлено: {success_count}/{len(recipients)}"
+                    )
+                except:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"Не удалось отправить сообщение пользователю {uid}: {e}")
+            failed_count += 1
+    
+    await loading_msg.delete()
+    
+    # Результат
+    result_text = f"""✅ Рассылка завершена!
+
+📊 Статистика:
+📨 Успешно отправлено: {success_count}
+❌ Не доставлено: {failed_count}
+👥 Всего получателей: {len(recipients)}
+📝 Тип рассылки: {recipients_name}"""
+    
+    user_states[user_id] = {'state': 'main'}
+    permissions = get_user_permissions(user_id)
+    
+    await update.message.reply_text(
+        result_text,
+        reply_markup=get_main_keyboard(permissions)
+    )
+
 # ==================== ОПТИМИЗИРОВАННЫЕ ФУНКЦИИ МАССОВОЙ РАССЫЛКИ ====================
 
 async def send_messages_batch(context, messages: List[Tuple[str, str]], batch_size=30):
