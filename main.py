@@ -456,6 +456,8 @@ async def preload_csv_files():
 # чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
 
 
+# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
+
 def get_moscow_time():
     """Получить текущее время в Москве"""
     return datetime.now(MOSCOW_TZ)
@@ -777,12 +779,148 @@ def get_env_key_for_branch(branch: str, network: str, is_reference: bool = False
     logger.info(f"Итоговый ключ переменной окружения: {env_key}")
     return env_key
 
+# ==================== ФУНКЦИИ ТЕЛЕФОННОГО СПРАВОЧНИКА ====================
+
+def load_contractors_data() -> List[Dict]:
+    """Загрузить данные контрагентов из CSV"""
+    contractors_url = os.environ.get('CONTRACTORS_PHONE_BOOK_URL')
+    if not contractors_url:
+        logger.error("CONTRACTORS_PHONE_BOOK_URL не задан в переменных окружения!")
+        return []
+    
+    try:
+        data = load_csv_from_url(contractors_url)
+        logger.info(f"Загружено {len(data)} контрагентов из справочника")
+        return data
+    except Exception as e:
+        logger.error(f"Ошибка загрузки справочника контрагентов: {e}")
+        return []
+
+def search_contractors(query: str, data: List[Dict]) -> List[Dict]:
+    """Поиск контрагентов по наименованию"""
+    if not query or not data:
+        return []
+    
+    # Нормализуем запрос
+    query_lower = query.lower().strip()
+    
+    results = []
+    seen_contractors = set()
+    
+    for row in data:
+        contractor_name = row.get('Контрагент', '').strip()
+        if not contractor_name:
+            continue
+        
+        # Поиск по вхождению подстроки (регистронезависимый)
+        if query_lower in contractor_name.lower():
+            if contractor_name not in seen_contractors:
+                results.append(row)
+                seen_contractors.add(contractor_name)
+    
+    # Сортируем результаты по названию
+    results.sort(key=lambda x: x.get('Контрагент', ''))
+    
+    logger.info(f"Поиск '{query}' нашел {len(results)} контрагентов")
+    return results
+
+def format_contractor_info(contractor_data: Dict) -> str:
+    """Форматирование информации о контрагенте для отображения"""
+    lines = []
+    
+    # Название организации
+    contractor_name = contractor_data.get('Контрагент', 'Не указано')
+    lines.append(f"🏢 **{contractor_name}**")
+    lines.append("")
+    
+    # Email адреса
+    email1 = contractor_data.get('Mail 1', '').strip()
+    email2 = contractor_data.get('Mail 2', '').strip()
+    
+    if email1 or email2:
+        lines.append("📧 **Email:**")
+        if email1:
+            lines.append(f"   • {email1}")
+        if email2:
+            lines.append(f"   • {email2}")
+        lines.append("")
+    
+    # Первое контактное лицо
+    position1 = contractor_data.get('Должность 1', '').strip()
+    contact1 = contractor_data.get('Контактное лицо 1', '').strip()
+    phone1 = contractor_data.get('Телефон 1', '').strip()
+    
+    if position1 or contact1 or phone1:
+        lines.append("👤 **Контактное лицо 1:**")
+        if position1:
+            lines.append(f"   • Должность: {position1}")
+        if contact1:
+            lines.append(f"   • ФИО: {contact1}")
+        if phone1:
+            # Форматируем телефон для удобства
+            phone1_formatted = format_phone_number(phone1)
+            lines.append(f"   • Телефон: {phone1_formatted}")
+        lines.append("")
+    
+    # Второе контактное лицо
+    position2 = contractor_data.get('Должность 2', '').strip()
+    contact2 = contractor_data.get('Контактное лицо 2', '').strip()
+    phone2 = contractor_data.get('Телефон 2', '').strip()
+    
+    if position2 or contact2 or phone2:
+        lines.append("👤 **Контактное лицо 2:**")
+        if position2:
+            lines.append(f"   • Должность: {position2}")
+        if contact2:
+            lines.append(f"   • ФИО: {contact2}")
+        if phone2:
+            # Форматируем телефон для удобства
+            phone2_formatted = format_phone_number(phone2)
+            lines.append(f"   • Телефон: {phone2_formatted}")
+    
+    # Если нет никакой информации кроме названия
+    if len(lines) == 2:  # Только название и пустая строка
+        lines.append("ℹ️ Контактная информация не указана")
+    
+    return "\n".join(lines)
+
+def format_phone_number(phone: str) -> str:
+    """Форматирование телефонного номера для красивого отображения"""
+    # Убираем все не-цифры
+    digits = ''.join(filter(str.isdigit, phone))
+    
+    # Если номер начинается с 8 или 7 и имеет 11 цифр - форматируем как российский
+    if len(digits) == 11 and digits[0] in ['7', '8']:
+        # +7 (XXX) XXX-XX-XX
+        return f"+7 ({digits[1:4]}) {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
+    elif len(digits) == 10:
+        # Возможно номер без кода страны
+        # (XXX) XXX-XX-XX
+        return f"({digits[0:3]}) {digits[3:6]}-{digits[6:8]}-{digits[8:10]}"
+    else:
+        # Возвращаем как есть если не можем отформатировать
+        return phone
+
+def get_all_contractors_sorted(data: List[Dict]) -> List[str]:
+    """Получить отсортированный список всех уникальных контрагентов"""
+    contractors = set()
+    
+    for row in data:
+        contractor_name = row.get('Контрагент', '').strip()
+        if contractor_name:
+            contractors.add(contractor_name)
+    
+    # Сортируем по алфавиту
+    sorted_contractors = sorted(contractors)
+    logger.info(f"Всего уникальных контрагентов: {len(sorted_contractors)}")
+    
+    return sorted_contractors
+
+
     
 # ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
 # ЧАСТЬ 4 === ФУНКЦИИ КЛАВИАТУР ==================================================================================================================
-
-
-
+# ЧАСТЬ 4 === ФУНКЦИИ КЛАВИАТУР ==================================================================================================================
 
 # ВАЖНО: Максимальное количество кнопок перед кнопкой "Назад"
 MAX_BUTTONS_BEFORE_BACK = 40  # Telegram позволяет до ~100 кнопок, но для удобства ограничим
@@ -1126,6 +1264,59 @@ def get_broadcast_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура при массовой рассылке"""
     keyboard = [
         ['❌ Отмена']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# Клавиатуры для телефонного справочника
+def get_phone_book_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Главное меню телефонного справочника"""
+    keyboard = [
+        ['🔍 Поиск по наименованию'],
+        ['📋 Весь реестр'],
+        ['⬅️ Назад', '🏠 Главная', '🔄 Рестарт']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_contractors_list_keyboard(contractors: List[str], page: int = 0) -> ReplyKeyboardMarkup:
+    """Клавиатура со списком контрагентов с пагинацией"""
+    keyboard = []
+    
+    # Параметры пагинации
+    items_per_page = 20  # Контрагентов на страницу
+    total_pages = (len(contractors) - 1) // items_per_page + 1
+    start_idx = page * items_per_page
+    end_idx = min(start_idx + items_per_page, len(contractors))
+    
+    # Информация о странице
+    if total_pages > 1:
+        keyboard.append([f'📄 Страница {page + 1} из {total_pages}'])
+    
+    # Добавляем контрагентов текущей страницы
+    for contractor in contractors[start_idx:end_idx]:
+        # Обрезаем название если слишком длинное
+        display_name = contractor[:40] + '...' if len(contractor) > 40 else contractor
+        keyboard.append([f'🏢 {display_name}'])
+    
+    # Навигация по страницам
+    nav_row = []
+    if page > 0:
+        nav_row.append('⬅️ Предыдущая')
+    if page < total_pages - 1:
+        nav_row.append('➡️ Следующая')
+    if nav_row:
+        keyboard.append(nav_row)
+    
+    keyboard.append(['🔍 Поиск'])
+    keyboard.append(['⬅️ Назад', '🏠 Главная', '🔄 Рестарт'])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_contractor_actions_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура действий с контрагентом"""
+    keyboard = [
+        ['🔍 Новый поиск'],
+        ['📋 К списку контрагентов'],
+        ['⬅️ Назад', '🏠 Главная', '🔄 Рестарт']
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -1755,6 +1946,8 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
 
 # ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
 
+# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
     user_id = str(update.effective_user.id)
@@ -1867,10 +2060,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Обработка кнопки Назад - ИСПРАВЛЕНО: убрал return в конце!
     if text == '⬅️ Назад':
-        if state in ['rosseti_kuban', 'rosseti_yug', 'reports', 'phones', 'settings', 'broadcast_message', 'broadcast_choice', 'admin']:
+        if state in ['rosseti_kuban', 'rosseti_yug', 'reports', 'phones', 'settings', 'broadcast_message', 'broadcast_choice', 'admin', 'phone_book', 'phone_book_search', 'contractor_view']:
             user_states[user_id] = {'state': 'main'}
             await update.message.reply_text("Главное меню", reply_markup=get_main_keyboard(permissions))
             return  # return только здесь
+            
+        elif state == 'phone_book_list':
+            # Возвращаемся в меню справочника
+            user_states[user_id] = {'state': 'phone_book'}
+            await update.message.reply_text(
+                "📞 Телефонный справочник контрагентов\n\n"
+                "Выберите способ поиска:",
+                reply_markup=get_phone_book_menu_keyboard()
+            )
+            return
             
         elif state == 'reference':
             previous_state = user_states[user_id].get('previous_state')
@@ -2506,8 +2709,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Выбор ТП из списка
             results = user_states[user_id].get('notification_results', [])
             
-            # Фильтруем результаты по выбранной ТП
-            tp_results = [r for r in results if r['Наименование ТП'] == text]
+            # ВАЖНО: Делаем точный поиск для получения ВСЕХ записей с этой ТП
+            branch = user_states[user_id].get('branch')
+            network = user_states[user_id].get('network')
+            
+            env_key = get_env_key_for_branch(branch, network, is_reference=True)
+            csv_url = os.environ.get(env_key)
+            
+            if csv_url:
+                data = load_csv_from_url(csv_url)
+                # Точный поиск по полному названию ТП
+                tp_results = [r for r in data if r.get('Наименование ТП', '') == text]
+                
+                # Фильтруем по РЭС если нужно
+                user_permissions = get_user_permissions(user_id)
+                user_res = user_permissions.get('res')
+                if user_res and user_res != 'All':
+                    tp_results = [r for r in tp_results if r.get('РЭС', '').strip() == user_res]
+                
+                logger.info(f"[select_notification_tp] Точный поиск для '{text}' нашел {len(tp_results)} записей")
+            else:
+                # Если не удалось загрузить - используем исходные результаты
+                tp_results = [r for r in results if r['Наименование ТП'] == text]
             
             if tp_results:
                 user_states[user_id]['selected_tp'] = text
@@ -2517,6 +2740,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # ВАЖНО: Получаем ВСЕ уникальные ВЛ
                 vl_list = list(set([r['Наименование ВЛ'] for r in tp_results]))
                 vl_list.sort()
+                
+                logger.info(f"[select_notification_tp] Найдено {len(vl_list)} уникальных ВЛ")
                 
                 # Используем функцию для создания клавиатуры
                 reply_markup = get_vl_selection_keyboard(vl_list, text)
@@ -2874,7 +3099,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         elif text == '📞 ТЕЛЕФОНЫ КОНТРАГЕНТОВ':
-            await update.message.reply_text("🚧 Раздел в разработке")
+            user_states[user_id] = {'state': 'phone_book'}
+            await update.message.reply_text(
+                "📞 Телефонный справочник контрагентов\n\n"
+                "Выберите способ поиска:",
+                reply_markup=get_phone_book_menu_keyboard()
+            )
         
         elif text == '🛠 АДМИНИСТРИРОВАНИЕ':
             if permissions.get('visibility') == 'All':
@@ -2958,6 +3188,193 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Выберите документ",
                 reply_markup=get_reference_keyboard()
             )
+    
+    # ==================== ТЕЛЕФОННЫЙ СПРАВОЧНИК ====================
+    elif state == 'phone_book':
+        if text == '🔍 Поиск по наименованию':
+            user_states[user_id]['state'] = 'phone_book_search'
+            await update.message.reply_text(
+                "🔍 Введите название организации или его часть:",
+                reply_markup=get_search_keyboard()
+            )
+        
+        elif text == '📋 Весь реестр':
+            # Загружаем данные контрагентов
+            contractors_data = load_contractors_data()
+            if not contractors_data:
+                await update.message.reply_text(
+                    "❌ Не удалось загрузить справочник контрагентов",
+                    reply_markup=get_main_keyboard(permissions)
+                )
+                user_states[user_id] = {'state': 'main'}
+                return
+            
+            # Получаем отсортированный список
+            all_contractors = get_all_contractors_sorted(contractors_data)
+            
+            if not all_contractors:
+                await update.message.reply_text(
+                    "📋 Справочник пуст",
+                    reply_markup=get_phone_book_menu_keyboard()
+                )
+                return
+            
+            # Сохраняем данные для навигации
+            user_states[user_id]['state'] = 'phone_book_list'
+            user_states[user_id]['contractors_list'] = all_contractors
+            user_states[user_id]['contractors_data'] = contractors_data
+            user_states[user_id]['current_page'] = 0
+            
+            await update.message.reply_text(
+                f"📋 Всего контрагентов: {len(all_contractors)}\n"
+                "Выберите контрагента:",
+                reply_markup=get_contractors_list_keyboard(all_contractors, 0)
+            )
+    
+    elif state == 'phone_book_search':
+        # Поиск контрагента
+        contractors_data = load_contractors_data()
+        if not contractors_data:
+            await update.message.reply_text(
+                "❌ Не удалось загрузить справочник контрагентов",
+                reply_markup=get_main_keyboard(permissions)
+            )
+            user_states[user_id] = {'state': 'main'}
+            return
+        
+        # Ищем контрагентов
+        results = search_contractors(text, contractors_data)
+        
+        if not results:
+            await update.message.reply_text(
+                f"❌ По запросу '{text}' ничего не найдено\n\n"
+                "Попробуйте изменить запрос",
+                reply_markup=get_phone_book_menu_keyboard()
+            )
+            user_states[user_id]['state'] = 'phone_book'
+            return
+        
+        # Если найден один контрагент - сразу показываем
+        if len(results) == 1:
+            contractor_info = format_contractor_info(results[0])
+            user_states[user_id]['state'] = 'contractor_view'
+            user_states[user_id]['current_contractor'] = results[0]
+            
+            await update.message.reply_text(
+                contractor_info,
+                parse_mode='Markdown',
+                reply_markup=get_contractor_actions_keyboard()
+            )
+        else:
+            # Если найдено несколько - показываем список
+            contractor_names = [r['Контрагент'] for r in results]
+            
+            user_states[user_id]['state'] = 'phone_book_list'
+            user_states[user_id]['contractors_list'] = contractor_names
+            user_states[user_id]['contractors_data'] = contractors_data
+            user_states[user_id]['current_page'] = 0
+            user_states[user_id]['search_query'] = text
+            
+            await update.message.reply_text(
+                f"🔍 По запросу '{text}' найдено: {len(results)}\n"
+                "Выберите контрагента:",
+                reply_markup=get_contractors_list_keyboard(contractor_names, 0)
+            )
+    
+    elif state == 'phone_book_list':
+        if text == '⬅️ Предыдущая':
+            current_page = user_states[user_id].get('current_page', 0)
+            if current_page > 0:
+                user_states[user_id]['current_page'] = current_page - 1
+                contractors_list = user_states[user_id].get('contractors_list', [])
+                
+                await update.message.reply_text(
+                    "Выберите контрагента:",
+                    reply_markup=get_contractors_list_keyboard(contractors_list, current_page - 1)
+                )
+        
+        elif text == '➡️ Следующая':
+            current_page = user_states[user_id].get('current_page', 0)
+            contractors_list = user_states[user_id].get('contractors_list', [])
+            items_per_page = 20
+            total_pages = (len(contractors_list) - 1) // items_per_page + 1
+            
+            if current_page < total_pages - 1:
+                user_states[user_id]['current_page'] = current_page + 1
+                
+                await update.message.reply_text(
+                    "Выберите контрагента:",
+                    reply_markup=get_contractors_list_keyboard(contractors_list, current_page + 1)
+                )
+        
+        elif text == '🔍 Поиск':
+            user_states[user_id]['state'] = 'phone_book_search'
+            await update.message.reply_text(
+                "🔍 Введите название организации или его часть:",
+                reply_markup=get_search_keyboard()
+            )
+        
+        elif text.startswith('🏢 '):
+            # Выбран контрагент
+            contractor_name = text[2:].strip()
+            
+            # Если название было обрезано - ищем полное
+            contractors_data = user_states[user_id].get('contractors_data', [])
+            contractor_data = None
+            
+            for row in contractors_data:
+                if row.get('Контрагент', '').strip() == contractor_name or \
+                   row.get('Контрагент', '').strip().startswith(contractor_name.replace('...', '')):
+                    contractor_data = row
+                    break
+            
+            if contractor_data:
+                contractor_info = format_contractor_info(contractor_data)
+                user_states[user_id]['state'] = 'contractor_view'
+                user_states[user_id]['current_contractor'] = contractor_data
+                
+                await update.message.reply_text(
+                    contractor_info,
+                    parse_mode='Markdown',
+                    reply_markup=get_contractor_actions_keyboard()
+                )
+            else:
+                await update.message.reply_text("❌ Информация о контрагенте не найдена")
+    
+    elif state == 'contractor_view':
+        if text == '🔍 Новый поиск':
+            user_states[user_id]['state'] = 'phone_book_search'
+            await update.message.reply_text(
+                "🔍 Введите название организации или его часть:",
+                reply_markup=get_search_keyboard()
+            )
+        
+        elif text == '📋 К списку контрагентов':
+            # Возвращаемся к списку если он был
+            if 'contractors_list' in user_states[user_id]:
+                contractors_list = user_states[user_id]['contractors_list']
+                current_page = user_states[user_id].get('current_page', 0)
+                user_states[user_id]['state'] = 'phone_book_list'
+                
+                search_query = user_states[user_id].get('search_query')
+                if search_query:
+                    message = f"🔍 Результаты поиска '{search_query}':\n"
+                else:
+                    message = f"📋 Всего контрагентов: {len(contractors_list)}\n"
+                
+                await update.message.reply_text(
+                    message + "Выберите контрагента:",
+                    reply_markup=get_contractors_list_keyboard(contractors_list, current_page)
+                )
+            else:
+                # Если списка не было - показываем главное меню справочника
+                user_states[user_id]['state'] = 'phone_book'
+                await update.message.reply_text(
+                    "📞 Телефонный справочник контрагентов\n\n"
+                    "Выберите способ поиска:",
+                    reply_markup=get_phone_book_menu_keyboard()
+                )
+    # ЧАСТЬ 5.3 КОНЕЦ====================================================================================================================
   
     # ЧАСТЬ 5.3 КОНЕЦ====================================================================================================================
     
