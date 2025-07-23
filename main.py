@@ -458,6 +458,8 @@ async def preload_csv_files():
 
 # чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
 
+# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
+
 def get_moscow_time():
     """Получить текущее время в Москве"""
     return datetime.now(MOSCOW_TZ)
@@ -824,13 +826,28 @@ def search_contractors(query: str, data: List[Dict]) -> List[Dict]:
     logger.info(f"Поиск '{query}' нашел {len(results)} контрагентов")
     return results
 
+def escape_markdown(text: str) -> str:
+    """Экранирование специальных символов для Telegram Markdown"""
+    if not text:
+        return text
+    
+    # Символы, которые нужно экранировать в Markdown
+    special_chars = ['*', '_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    
+    escaped_text = text
+    for char in special_chars:
+        escaped_text = escaped_text.replace(char, f'\\{char}')
+    
+    return escaped_text
+
 def format_contractor_info(contractor_data: Dict) -> str:
     """Форматирование информации о контрагенте для отображения"""
     lines = []
     
-    # Название организации
+    # Название организации - ЭКРАНИРУЕМ!
     contractor_name = contractor_data.get('Контрагент', 'Не указано')
-    lines.append(f"🏢 **{contractor_name}**")
+    contractor_name_escaped = escape_markdown(contractor_name)
+    lines.append(f"🏢 **{contractor_name_escaped}**")
     lines.append("")
     
     # Email адреса
@@ -840,9 +857,9 @@ def format_contractor_info(contractor_data: Dict) -> str:
     if email1 or email2:
         lines.append("📧 **Email:**")
         if email1:
-            lines.append(f"   • {email1}")
+            lines.append(f"   • {escape_markdown(email1)}")
         if email2:
-            lines.append(f"   • {email2}")
+            lines.append(f"   • {escape_markdown(email2)}")
         lines.append("")
     
     # Первое контактное лицо
@@ -853,13 +870,13 @@ def format_contractor_info(contractor_data: Dict) -> str:
     if position1 or contact1 or phone1:
         lines.append("👤 **Контактное лицо 1:**")
         if position1:
-            lines.append(f"   • Должность: {position1}")
+            lines.append(f"   • Должность: {escape_markdown(position1)}")
         if contact1:
-            lines.append(f"   • ФИО: {contact1}")
+            lines.append(f"   • ФИО: {escape_markdown(contact1)}")
         if phone1:
             # Форматируем телефон для удобства
             phone1_formatted = format_phone_number(phone1)
-            lines.append(f"   • Телефон: {phone1_formatted}")
+            lines.append(f"   • Телефон: {escape_markdown(phone1_formatted)}")
         lines.append("")
     
     # Второе контактное лицо
@@ -870,13 +887,13 @@ def format_contractor_info(contractor_data: Dict) -> str:
     if position2 or contact2 or phone2:
         lines.append("👤 **Контактное лицо 2:**")
         if position2:
-            lines.append(f"   • Должность: {position2}")
+            lines.append(f"   • Должность: {escape_markdown(position2)}")
         if contact2:
-            lines.append(f"   • ФИО: {contact2}")
+            lines.append(f"   • ФИО: {escape_markdown(contact2)}")
         if phone2:
             # Форматируем телефон для удобства
             phone2_formatted = format_phone_number(phone2)
-            lines.append(f"   • Телефон: {phone2_formatted}")
+            lines.append(f"   • Телефон: {escape_markdown(phone2_formatted)}")
     
     # Если нет никакой информации кроме названия
     if len(lines) == 2:  # Только название и пустая строка
@@ -916,8 +933,7 @@ def get_all_contractors_sorted(data: List[Dict]) -> List[str]:
     
     return sorted_contractors
 
-
-    
+# ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
 # ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
 # ЧАСТЬ 4 === ФУНКЦИИ КЛАВИАТУР ==================================================================================================================
 # ЧАСТЬ 4 === ФУНКЦИИ КЛАВИАТУР ==================================================================================================================
@@ -1941,6 +1957,8 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
             reply_markup=get_after_search_keyboard(tp_name, search_query)
         )
         #ЧАСТЬ 5.2 КОНЕЦ= ОБРАБОТЧИК СООБЩЕНИЙ ================================================================================================
+
+# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
 
 # ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
 
@@ -3247,7 +3265,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not results:
             await update.message.reply_text(
-                f"❌ По запросу '{text}' ничего не найдено\n\n"
+                f"❌ По запросу '{escape_markdown(text)}' ничего не найдено\n\n"
                 "Попробуйте изменить запрос",
                 reply_markup=get_phone_book_menu_keyboard()
             )
@@ -3276,7 +3294,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id]['search_query'] = text
             
             await update.message.reply_text(
-                f"🔍 По запросу '{text}' найдено: {len(results)}\n"
+                f"🔍 По запросу '{escape_markdown(text)}' найдено: {len(results)}\n"
                 "Выберите контрагента:",
                 reply_markup=get_contractors_list_keyboard(contractor_names, 0)
             )
@@ -3358,7 +3376,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 search_query = user_states[user_id].get('search_query')
                 if search_query:
-                    message = f"🔍 Результаты поиска '{search_query}':\n"
+                    message = f"🔍 Результаты поиска '{escape_markdown(search_query)}':\n"
                 else:
                     message = f"📋 Всего контрагентов: {len(contractors_list)}\n"
                 
