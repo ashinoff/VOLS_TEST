@@ -877,7 +877,7 @@ def format_contractor_info(contractor_data: Dict) -> str:
         if phone1:
             # Форматируем телефон для удобства
             phone1_formatted = format_phone_number(phone1)
-            lines.append(f"   • Телефон: {escape_markdown(phone1_formatted)}")
+            lines.append(f"   • Телефон: {phone1_formatted}")
         lines.append("")
     
     # Второе контактное лицо
@@ -894,7 +894,7 @@ def format_contractor_info(contractor_data: Dict) -> str:
         if phone2:
             # Форматируем телефон для удобства
             phone2_formatted = format_phone_number(phone2)
-            lines.append(f"   • Телефон: {escape_markdown(phone2_formatted)}")
+            lines.append(f"   • Телефон: {phone2_formatted}")
     
     # Если нет никакой информации кроме названия
     if len(lines) == 2:  # Только название и пустая строка
@@ -935,6 +935,8 @@ def get_all_contractors_sorted(data: List[Dict]) -> List[str]:
     return sorted_contractors
 
 # ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
+
+
 # ЧАСТЬ 4 === ФУНКЦИИ КЛАВИАТУР ==================================================================================================================
 
 
