@@ -66,10 +66,10 @@ ROSSETI_YUG_BRANCHES = [
 # Кэш для CSV файлов
 csv_cache = {}
 csv_cache_time = {}
-CSV_CACHE_DURATION = timedelta(hours=2)  # Кэш на 2 часа
+CSV_CACHE_DURATION = timedelta(hours=4)  # Увеличено до 4 часов для оптимизации
 
-# Индексы для быстрого поиска
-csv_index_cache = {}
+# НОВОЕ: Индексы для быстрого поиска
+csv_index_cache = {}  # {url: {'tp_index': {}, 'tp_normalized': {}, 'res_index': {}}}
 
 # Пул соединений для requests (для загрузки пользователей)
 session = requests.Session()
@@ -123,11 +123,99 @@ USER_GUIDE_URL = os.environ.get('USER_GUIDE_URL', 'https://your-domain.com/vols-
 
 BOT_USERS_FILE = os.environ.get('BOT_USERS_FILE', 'bot_users.json')
 
+
 # ЧАСТЬ 1 ==================== конец==================== ============================================================================================================
 # ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ============================================================================================================
+# ЧАСТЬ 2 ==================== УЛУЧШЕННЫЕ ФУНКЦИИ ПОИСКА ============================================================================================================
 
+def build_csv_index(data: List[Dict], url: str):
+    """Построить индексы для быстрого поиска"""
+    if url not in csv_index_cache:
+        csv_index_cache[url] = {
+            'tp_index': {},        # {'ТП-123': [indices]}
+            'tp_normalized': {},   # {'ТП123': 'ТП-123'}
+            'res_index': {},       # {'РЭС': [indices]}
+            'by_tp_vl': {}        # {('ТП', 'ВЛ'): [indices]}
+        }
+    
+    index = csv_index_cache[url]
+    
+    for i, row in enumerate(data):
+        # Индекс по ТП
+        tp_name = row.get('Наименование ТП', '')
+        if tp_name:
+            # Точное название
+            if tp_name not in index['tp_index']:
+                index['tp_index'][tp_name] = []
+            index['tp_index'][tp_name].append(i)
+            
+            # Нормализованное для поиска
+            normalized = normalize_tp_name_advanced(tp_name)
+            compact = normalized.replace('-', '').replace(' ', '')
+            if compact:
+                index['tp_normalized'][compact] = tp_name
+        
+        # Индекс по РЭС
+        res = row.get('РЭС', '')
+        if res:
+            if res not in index['res_index']:
+                index['res_index'][res] = []
+            index['res_index'][res].append(i)
+        
+        # Индекс по комбинации ТП+ВЛ
+        vl_name = row.get('Наименование ВЛ', '')
+        if tp_name and vl_name:
+            key = (tp_name, vl_name)
+            if key not in index['by_tp_vl']:
+                index['by_tp_vl'][key] = []
+            index['by_tp_vl'][key].append(i)
+    
+    logger.info(f"✅ Построены индексы для {url}: {len(index['tp_index'])} ТП, {len(index['res_index'])} РЭС")
 
-
+def search_tp_optimized(tp_query: str, data: List[Dict], url: str) -> List[Dict]:
+    """Оптимизированный поиск с использованием индексов"""
+    if not data or not tp_query:
+        return []
+    
+    # Строим индексы если их нет
+    if url not in csv_index_cache:
+        build_csv_index(data, url)
+    
+    index = csv_index_cache[url]
+    normalized_query = normalize_tp_name_advanced(tp_query)
+    compact_query = normalized_query.replace('-', '').replace(' ', '')
+    
+    results_indices = set()
+    
+    # 1. Сначала ищем точное совпадение
+    if tp_query in index['tp_index']:
+        results_indices.update(index['tp_index'][tp_query])
+        logger.info(f"[search_tp_optimized] Точное совпадение для '{tp_query}': {len(results_indices)} записей")
+    
+    # 2. Потом по нормализованному
+    elif compact_query in index['tp_normalized']:
+        exact_name = index['tp_normalized'][compact_query]
+        if exact_name in index['tp_index']:
+            results_indices.update(index['tp_index'][exact_name])
+            logger.info(f"[search_tp_optimized] Нормализованное совпадение для '{tp_query}': {len(results_indices)} записей")
+    
+    # 3. Если не нашли - поиск по частичному совпадению в индексе
+    else:
+        for tp_compact, tp_full in index['tp_normalized'].items():
+            if compact_query in tp_compact or tp_compact in compact_query:
+                if tp_full in index['tp_index']:
+                    results_indices.update(index['tp_index'][tp_full])
+        
+        if results_indices:
+            logger.info(f"[search_tp_optimized] Частичное совпадение для '{tp_query}': {len(results_indices)} записей")
+    
+    # Если индексный поиск нашел результаты - возвращаем
+    if results_indices:
+        return [data[i] for i in sorted(results_indices)]
+    
+    # Если не нашли через индексы - fallback на старый поиск
+    logger.info(f"[search_tp_optimized] Индексы не дали результатов, используем полный поиск")
+    return search_tp_in_data_advanced(tp_query, data, 'Наименование ТП')
 
 def normalize_tp_name_advanced(name: str) -> str:
     """Улучшенная нормализация имени ТП для поиска"""
@@ -281,7 +369,13 @@ def normalize_tp_name(name: str) -> str:
     return ''.join(filter(str.isdigit, name))
 
 def search_tp_in_data(tp_query: str, data: List[Dict], column: str) -> List[Dict]:
-    """Поиск ТП в данных (использует улучшенную версию)"""
+    """Поиск ТП в данных (использует оптимизированную версию если есть URL)"""
+    # Пытаемся найти URL для этих данных в кэше
+    for url, cached_data in csv_cache.items():
+        if cached_data is data:
+            return search_tp_optimized(tp_query, data, url)
+    
+    # Если URL не найден - используем обычный поиск
     return search_tp_in_data_advanced(tp_query, data, column)
 
 # Новая функция для двойного поиска
@@ -302,7 +396,7 @@ async def search_tp_in_both_catalogs(tp_query: str, branch: str, network: str, u
     if registry_url:
         logger.info(f"Поиск в реестре договоров: {registry_env_key}")
         registry_data = await load_csv_from_url_async(registry_url)
-        registry_results = search_tp_in_data(tp_query, registry_data, 'Наименование ТП')
+        registry_results = search_tp_optimized(tp_query, registry_data, registry_url)
         
         # Фильтруем по РЭС если нужно
         if user_res and user_res != 'All':
@@ -319,7 +413,7 @@ async def search_tp_in_both_catalogs(tp_query: str, branch: str, network: str, u
     if structure_url:
         logger.info(f"Поиск в структуре сети: {structure_env_key}")
         structure_data = await load_csv_from_url_async(structure_url)
-        structure_results = search_tp_in_data(tp_query, structure_data, 'Наименование ТП')
+        structure_results = search_tp_optimized(tp_query, structure_data, structure_url)
         
         # Фильтруем по РЭС если нужно
         if user_res and user_res != 'All':
@@ -334,7 +428,7 @@ async def search_tp_in_both_catalogs(tp_query: str, branch: str, network: str, u
 # ==================== АСИНХРОННАЯ ЗАГРУЗКА CSV ====================
 
 async def load_csv_from_url_async(url: str) -> List[Dict]:
-    """Асинхронная загрузка CSV с кэшированием"""
+    """Асинхронная загрузка CSV с кэшированием и индексацией"""
     # Проверяем кэш
     if url in csv_cache:
         cache_time = csv_cache_time.get(url)
@@ -363,7 +457,10 @@ async def load_csv_from_url_async(url: str) -> List[Dict]:
                 csv_cache[url] = data
                 csv_cache_time[url] = datetime.now()
                 
-                logger.info(f"✅ Загружено и закэшировано {len(data)} строк")
+                # НОВОЕ: Строим индексы сразу после загрузки
+                build_csv_index(data, url)
+                
+                logger.info(f"✅ Загружено и проиндексировано {len(data)} строк")
                 return data
                 
     except asyncio.TimeoutError:
@@ -408,7 +505,10 @@ def load_csv_from_url(url: str) -> List[Dict]:
         csv_cache[url] = data
         csv_cache_time[url] = datetime.now()
         
-        logger.info(f"Успешно загружено {len(data)} строк из CSV")
+        # НОВОЕ: Строим индексы
+        build_csv_index(data, url)
+        
+        logger.info(f"Успешно загружено и проиндексировано {len(data)} строк из CSV")
         return data
     except requests.exceptions.Timeout:
         logger.error(f"Таймаут при загрузке CSV из {url}")
@@ -450,13 +550,10 @@ async def preload_csv_files():
             if isinstance(result, Exception):
                 logger.error(f"❌ Ошибка загрузки {csv_urls[i]}: {result}")
 
+# чАСТЬ 2 КОНЕЦ    ==================================================================================================================================================
 
 
-# чАСТЬ 2 КОНЕЦ    ==================================================================================================================================================    
-# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
-
-
-# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
+# ЧАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
 
 # ЧАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
 
@@ -934,6 +1031,7 @@ def get_all_contractors_sorted(data: List[Dict]) -> List[str]:
     
     return sorted_contractors
 
+# ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
 # ЧАСТЬ 3 КОНЕЦ==============================================================================================================================
 
 
@@ -3403,455 +3501,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
   
 # ЧАСТЬ ФИНАЛ=======================================================================================================================
 
-# ==================== ОБРАБОТЧИКИ ЛОКАЦИИ И ФОТО ====================
+# ЧАСТЬ ФИНАЛ - ОПТИМИЗИРОВАННАЯ ИНИЦИАЛИЗАЦИЯ =======================================================
 
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка геолокации"""
-    user_id = str(update.effective_user.id)
-    state = user_states.get(user_id, {}).get('state')
-    
-    if state == 'send_notification' and user_states[user_id].get('action') == 'send_location':
-        location = update.message.location
-        selected_tp = user_states[user_id].get('selected_tp')
-        selected_vl = user_states[user_id].get('selected_vl')
-        
-        # Сохраняем локацию
-        user_states[user_id]['location'] = {
-            'latitude': location.latitude,
-            'longitude': location.longitude
-        }
-        
-        # Переходим к запросу фото
-        user_states[user_id]['action'] = 'request_photo'
-        
-        keyboard = [
-            ['⏭ Пропустить и добавить комментарий'],
-            ['📤 Отправить без фото и комментария'],
-            ['⬅️ Назад']
-        ]
-        
-        # Отправляем анимированную подсказку
-        photo_tips = [
-            "📸 Подготовьте камеру...",
-            "📷 Сфотографируйте бездоговорной ВОЛС...",
-            "💡 Совет: Снимите общий вид и детали"
-        ]
-        
-        tip_msg = await update.message.reply_text(photo_tips[0])
-        
-        for tip in photo_tips[1:]:
-            await asyncio.sleep(1.5)
-            try:
-                await tip_msg.edit_text(tip)
-            except Exception:
-                pass
-        
-        await asyncio.sleep(1.5)
-        await tip_msg.delete()
-        
-        # Отправляем основное сообщение с информацией о выбранных ТП и ВЛ
-        await update.message.reply_text(
-            f"✅ Местоположение получено!\n\n"
-            f"📍 ТП: {selected_tp}\n"
-            f"⚡ ВЛ: {selected_vl}\n\n"
-            "📸 Сделайте фото бездоговорного ВОЛС\n\n"
-            "Как отправить фото:\n"
-            "📱 **Мобильный**: нажмите 📎 → Камера\n"
-            "Или выберите действие ниже:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
-            parse_mode='Markdown'
-        )
+# ==================== ОПТИМИЗИРОВАННЫЕ ФУНКЦИИ МАССОВОЙ РАССЫЛКИ ====================
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка фотографий"""
-    user_id = str(update.effective_user.id)
-    state = user_states.get(user_id, {}).get('state')
-    
-    if state == 'send_notification' and user_states[user_id].get('action') == 'request_photo':
-        # Сохраняем фото
-        photo = update.message.photo[-1]  # Берем фото в максимальном качестве
-        file_id = photo.file_id
-        
-        user_states[user_id]['photo_id'] = file_id
-        user_states[user_id]['action'] = 'add_comment'
-        
-        keyboard = [
-            ['📤 Отправить без комментария'],
-            ['⬅️ Назад']
-        ]
-        
-        selected_tp = user_states[user_id].get('selected_tp')
-        selected_vl = user_states[user_id].get('selected_vl')
-        
-        await update.message.reply_text(
-            f"✅ Фото получено!\n\n"
-            f"📍 ТП: {selected_tp}\n"
-            f"⚡ ВЛ: {selected_vl}\n\n"
-            "💬 Добавьте комментарий к уведомлению или отправьте без комментария:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
-    logger.error(f"Exception while handling an update: {context.error}")
-    
-    try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "⚠️ Произошла ошибка при обработке вашего запроса. Попробуйте еще раз."
-            )
-    except Exception:
-        pass
-
-# ==================== ДОБАВЛЯЕМ НЕДОСТАЮЩИЕ ФУНКЦИИ ====================
-
-async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
-    """Генерация отчета по уведомлениям"""
-    loading_msg = await update.message.reply_text("📊 Генерирую отчет...")
-    
-    # Фильтруем уведомления
-    notifications = notifications_storage.get(network, [])
-    
-    if not notifications:
-        await loading_msg.delete()
-        await update.message.reply_text(
-            f"📊 Нет данных для отчета по {'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'}"
-        )
-        return
-    
-    # Создаем DataFrame - БЕЗ ID!
-    report_data = []
-    for notif in notifications:
-        report_data.append({
-            'Филиал': notif['branch'],
-            'РЭС': notif['res'],
-            'ТП': notif['tp'],
-            'ВЛ': notif['vl'],
-            'Отправитель': notif['sender_name'],
-            'Получатель': notif['recipient_name'],
-            'Дата и время': notif['datetime'],
-            'Координаты': notif['coordinates'],
-            'Комментарий': notif['comment'],
-            'Фото': 'Да' if notif['has_photo'] else 'Нет'  # Преобразуем в Да/Нет
-        })
-    
-    df = pd.DataFrame(report_data)
-    
-    # Создаем Excel файл
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='Уведомления', index=False)
-        
-        workbook = writer.book
-        worksheet = writer.sheets['Уведомления']
-        
-        # Форматирование
-        header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#4472C4',
-            'font_color': 'white',
-            'border': 1
-        })
-        
-        for col_num, value in enumerate(df.columns.values):
-            worksheet.write(0, col_num, value, header_format)
-        
-        # Автоподбор ширины колонок
-        for i, col in enumerate(df.columns):
-            # Безопасно вычисляем максимальную длину
-            try:
-                max_len = df[col].astype(str).str.len().max()
-                # Проверяем на NaN
-                if pd.isna(max_len):
-                    max_len = 10
-                column_len = max(int(max_len), len(col)) + 2
-            except:
-                column_len = len(col) + 2
-            
-            worksheet.set_column(i, i, column_len)
-    
-    buffer.seek(0)
-    
-    # Отправляем файл
-    network_name = 'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'
-    filename = f"Уведомления_{network_name}_{get_moscow_time().strftime('%d.%m.%Y_%H%M')}.xlsx"
-    
-    await loading_msg.delete()
-    
-    caption = f"📊 Отчет по уведомлениям {network_name}\n"
-    caption += f"Период: все время\n"
-    caption += f"Всего уведомлений: {len(notifications)}"
-    
-    await update.message.reply_document(
-        document=InputFile(buffer, filename=filename),
-        caption=caption
-    )
-    
-    # Сохраняем информацию об отчете
-    user_id = str(update.effective_user.id)
-    user_states[user_id]['state'] = 'report_actions'
-    user_states[user_id]['last_report'] = {
-        'filename': filename,
-        'caption': caption,
-        'data': buffer.getvalue()
-    }
-    
-    await update.message.reply_text(
-        "Отчет сгенерирован",
-        reply_markup=get_report_action_keyboard()
-    )
-
-async def generate_activity_report(update: Update, context: ContextTypes.DEFAULT_TYPE, network: str, permissions: Dict):
-    """Генерация отчета по активности"""
-    loading_msg = await update.message.reply_text("📊 Генерирую отчет активности...")
-    
-    # Собираем данные об активности - БЕЗ ID!
-    activity_data = []
-    for uid, activity in user_activity.items():
-        user_data = users_cache.get(uid, {})
-        if network == 'RK' and user_data.get('visibility') in ['All', 'RK']:
-            activity_data.append({
-                'ФИО': user_data.get('name', 'Неизвестный'),
-                'Филиал': user_data.get('branch', '-'),
-                'РЭС': user_data.get('res', '-'),
-                'Последняя активность': activity['last_activity'].strftime('%d.%m.%Y %H:%M'),
-                'Количество уведомлений': activity['count']
-            })
-        elif network == 'UG' and user_data.get('visibility') in ['All', 'UG']:
-            activity_data.append({
-                'ФИО': user_data.get('name', 'Неизвестный'),
-                'Филиал': user_data.get('branch', '-'),
-                'РЭС': user_data.get('res', '-'),
-                'Последняя активность': activity['last_activity'].strftime('%d.%m.%Y %H:%M'),
-                'Количество уведомлений': activity['count']
-            })
-    
-    if not activity_data:
-        await loading_msg.delete()
-        await update.message.reply_text(
-            f"📊 Нет данных по активности для {'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'}"
-        )
-        return
-    
-    # Создаем DataFrame
-    df = pd.DataFrame(activity_data)
-    
-    # Создаем Excel файл
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='Активность', index=False)
-        
-        workbook = writer.book
-        worksheet = writer.sheets['Активность']
-        
-        # Форматирование
-        header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#70AD47',
-            'font_color': 'white',
-            'border': 1
-        })
-        
-        for col_num, value in enumerate(df.columns.values):
-            worksheet.write(0, col_num, value, header_format)
-        
-        # Автоподбор ширины колонок
-        for i, col in enumerate(df.columns):
-            # Безопасно вычисляем максимальную длину
-            try:
-                max_len = df[col].astype(str).str.len().max()
-                # Проверяем на NaN
-                if pd.isna(max_len):
-                    max_len = 10
-                column_len = max(int(max_len), len(col)) + 2
-            except:
-                column_len = len(col) + 2
-            
-            worksheet.set_column(i, i, column_len)
-    
-    buffer.seek(0)
-    
-    # Отправляем файл
-    network_name = 'РОССЕТИ КУБАНЬ' if network == 'RK' else 'РОССЕТИ ЮГ'
-    filename = f"Активность_{network_name}_{get_moscow_time().strftime('%d.%m.%Y_%H%M')}.xlsx"
-    
-    await loading_msg.delete()
-    
-    caption = f"📈 Отчет по активности пользователей {network_name}\n"
-    caption += f"Всего активных пользователей: {len(activity_data)}"
-    
-    await update.message.reply_document(
-        document=InputFile(buffer, filename=filename),
-        caption=caption
-    )
-    
-    # Сохраняем информацию об отчете
-    user_id = str(update.effective_user.id)
-    user_states[user_id]['state'] = 'report_actions'
-    user_states[user_id]['last_report'] = {
-        'filename': filename,
-        'caption': caption,
-        'data': buffer.getvalue()
-    }
-    
-    await update.message.reply_text(
-        "Отчет сгенерирован",
-        reply_markup=get_report_action_keyboard()
-    )
-
-async def generate_ping_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Генерация отчета о статусе пользователей"""
-    loading_msg = await update.message.reply_text("🔄 Проверяю статус пользователей...")
-    
-    ping_data = []
-    total_users = len(users_cache)
-    active_users = 0
-    blocked_users = 0
-    never_started = 0
-    
-    for uid, user_data in users_cache.items():
-        status = "❓ Неизвестно"
-        last_activity = "-"
-        
-        # Проверяем, запускал ли пользователь бота
-        if uid in bot_users:
-            last_start = bot_users[uid]['last_start']
-            last_activity = last_start.strftime('%d.%m.%Y %H:%M')
-            status = "✅ Активен"
-            active_users += 1
-        else:
-            status = "⏸️ Не запускал"
-            never_started += 1
-        
-        ping_data.append({
-            'ID': uid,
-            'ФИО': user_data.get('name', 'Неизвестный'),
-            'Филиал': user_data.get('branch', '-'),
-            'РЭС': user_data.get('res', '-'),
-            'Статус': status,
-            'Последний запуск': last_activity
-        })
-    
-    # Создаем DataFrame
-    df = pd.DataFrame(ping_data)
-    
-    # Создаем Excel файл
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='Статус пользователей', index=False)
-        
-        workbook = writer.book
-        worksheet = writer.sheets['Статус пользователей']
-        
-        # Форматирование
-        header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#FFC000',
-            'font_color': 'black',
-            'border': 1
-        })
-        
-        for col_num, value in enumerate(df.columns.values):
-            worksheet.write(0, col_num, value, header_format)
-        
-        # Автоподбор ширины колонок
-        for i, col in enumerate(df.columns):
-            # Безопасно вычисляем максимальную длину
-            try:
-                max_len = df[col].astype(str).str.len().max()
-                # Проверяем на NaN
-                if pd.isna(max_len):
-                    max_len = 10
-                column_len = max(int(max_len), len(col)) + 2
-            except:
-                column_len = len(col) + 2
-            
-            worksheet.set_column(i, i, column_len)
-    
-    buffer.seek(0)
-    
-    # Отправляем файл
-    filename = f"Статус_пользователей_{get_moscow_time().strftime('%d.%m.%Y_%H%M')}.xlsx"
-    
-    await loading_msg.delete()
-    
-    caption = f"""📊 Статус пользователей бота
-
-👥 Всего пользователей: {total_users}
-✅ Активных (запускали бота): {active_users}
-⏸️ Не запускали: {never_started}
-
-💾 Данные сохранены в файле: {BOT_USERS_FILE}"""
-    
-    await update.message.reply_document(
-        document=InputFile(buffer, filename=filename),
-        caption=caption
-    )
-
-async def notify_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Уведомление о перезапуске бота"""
-    # Проверяем, есть ли пользователи для уведомления
-    if not bot_users:
-        await update.message.reply_text(
-            "⚠️ Нет пользователей для уведомления.\n"
-            "Пока никто не активировал бота командой /start после последнего обновления."
-        )
-        return
-        
-    loading_msg = await update.message.reply_text(
-        f"🔄 Отправляю уведомления о перезапуске...\n"
-        f"Всего пользователей: {len(bot_users)}"
-    )
-    
+async def send_messages_batch(context, messages: List[Tuple[str, str]], batch_size=30):
+    """Отправка сообщений батчами для оптимизации"""
     success_count = 0
     failed_count = 0
     
-    message_text = """🔄 Бот ВОЛС Ассистент был обновлен!
-
-✨ Что нового:
-• Улучшена стабильность работы
-• Оптимизирована скорость загрузки данных
-• Исправлены мелкие ошибки
-
-Для продолжения работы используйте команду /start"""
+    for i in range(0, len(messages), batch_size):
+        batch = messages[i:i + batch_size]
+        tasks = []
+        
+        for uid, text in batch:
+            tasks.append(context.bot.send_message(chat_id=uid, text=text, parse_mode='Markdown'))
+        
+        # Отправляем батч параллельно
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Подсчитываем результаты
+        for result in results:
+            if isinstance(result, Exception):
+                failed_count += 1
+            else:
+                success_count += 1
+        
+        # Пауза между батчами для избежания лимитов
+        if i + batch_size < len(messages):
+            await asyncio.sleep(1)
     
-    # Отправляем по одному сообщению с задержкой
-    for uid in bot_users.keys():
-        try:
-            await context.bot.send_message(
-                chat_id=uid,
-                text=message_text
-            )
-            success_count += 1
-            await asyncio.sleep(0.1)  # Защита от лимитов Telegram
-            
-            # Обновляем статус каждые 10 сообщений
-            if success_count % 10 == 0:
-                try:
-                    await loading_msg.edit_text(
-                        f"🔄 Отправляю уведомления...\n"
-                        f"✅ Отправлено: {success_count}/{len(bot_users)}"
-                    )
-                except:
-                    pass
-                    
-        except Exception as e:
-            logger.error(f"Не удалось отправить уведомление пользователю {uid}: {e}")
-            failed_count += 1
-    
-    await loading_msg.delete()
-    
-    result_text = f"""✅ Уведомление о перезапуске отправлено!
+    return success_count, failed_count
 
-📊 Статистика:
-📨 Успешно: {success_count}
-❌ Не доставлено: {failed_count}
-👥 Всего пользователей: {len(bot_users)}"""
-    
-    await update.message.reply_text(result_text)
-
-async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка массовой рассылки"""
+async def handle_broadcast_optimized(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Оптимизированная обработка массовой рассылки"""
     user_id = str(update.effective_user.id)
     text = update.message.text
     
@@ -3879,33 +3562,11 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Всего получателей: {len(recipients)}"
     )
     
-    success_count = 0
-    failed_count = 0
+    # Подготавливаем сообщения
+    messages = [(uid, text) for uid in recipients]
     
-    # Отправляем сообщения
-    for i, uid in enumerate(recipients):
-        try:
-            await context.bot.send_message(
-                chat_id=uid,
-                text=text,
-                parse_mode='Markdown'
-            )
-            success_count += 1
-            await asyncio.sleep(0.1)  # Защита от лимитов
-            
-            # Обновляем статус каждые 10 сообщений
-            if (i + 1) % 10 == 0:
-                try:
-                    await loading_msg.edit_text(
-                        f"📤 Отправляю сообщения...\n"
-                        f"✅ Отправлено: {success_count}/{len(recipients)}"
-                    )
-                except:
-                    pass
-                    
-        except Exception as e:
-            logger.error(f"Не удалось отправить сообщение пользователю {uid}: {e}")
-            failed_count += 1
+    # Отправляем батчами
+    success_count, failed_count = await send_messages_batch(context, messages)
     
     await loading_msg.delete()
     
@@ -3932,21 +3593,23 @@ async def preload_documents():
     """Предзагрузка документов в кэш при старте"""
     logger.info("📄 Начинаем предзагрузку документов...")
     
+    tasks = []
     for doc_name, doc_url in REFERENCE_DOCS.items():
         if doc_url:
-            try:
-                logger.info(f"Загружаем {doc_name}...")
-                await get_cached_document(doc_name, doc_url)
-                logger.info(f"✅ {doc_name} загружен в кэш")
-            except Exception as e:
-                logger.error(f"❌ Ошибка загрузки {doc_name}: {e}")
+            tasks.append(get_cached_document(doc_name, doc_url))
+    
+    # Загружаем параллельно
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        success_count = sum(1 for r in results if r and not isinstance(r, Exception))
+        logger.info(f"✅ Предзагружено {success_count}/{len(tasks)} документов")
     
     logger.info("✅ Предзагрузка документов завершена")
 
 async def refresh_users_data():
     """Периодическое обновление данных пользователей"""
     while True:
-        await asyncio.sleep(300)  # Каждые 5 минут
+        await asyncio.sleep(600)  # Каждые 10 минут (увеличено с 5)
         logger.info("🔄 Обновляем данные пользователей...")
         try:
             load_users_data()
@@ -3957,7 +3620,7 @@ async def refresh_users_data():
 async def save_bot_users_periodically():
     """Периодическое сохранение данных о пользователях бота"""
     while True:
-        await asyncio.sleep(120)  # Каждые 2 минуты вместо 10
+        await asyncio.sleep(120)  # Каждые 2 минуты
         
         # Сохраняем только если есть что сохранять
         if bot_users:
@@ -3974,17 +3637,59 @@ async def refresh_documents_cache():
         await asyncio.sleep(3600)  # Каждый час
         logger.info("🔄 Обновляем кэш документов...")
         
+        tasks = []
         for doc_name in list(documents_cache.keys()):
             doc_url = REFERENCE_DOCS.get(doc_name)
             if doc_url:
-                try:
-                    del documents_cache[doc_name]
-                    del documents_cache_time[doc_name]
-                    
-                    await get_cached_document(doc_name, doc_url)
-                    logger.info(f"✅ Обновлен кэш для {doc_name}")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка обновления кэша {doc_name}: {e}")
+                # Удаляем из кэша
+                del documents_cache[doc_name]
+                del documents_cache_time[doc_name]
+                # Добавляем задачу на перезагрузку
+                tasks.append(get_cached_document(doc_name, doc_url))
+        
+        # Загружаем параллельно
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            success_count = sum(1 for r in results if r and not isinstance(r, Exception))
+            logger.info(f"✅ Обновлено {success_count}/{len(tasks)} документов в кэше")
+
+async def warm_up_cache():
+    """Прогрев кэша при старте - загрузка и индексация всех данных"""
+    logger.info("🔥 Начинаем прогрев кэша...")
+    
+    # Параллельная загрузка всех CSV
+    csv_tasks = []
+    csv_urls = []
+    
+    for key, value in os.environ.items():
+        if 'URL' in key and value and value.startswith('http') and 'csv' in value.lower():
+            csv_urls.append(value)
+            csv_tasks.append(load_csv_from_url_async(value))
+    
+    # Параллельная загрузка документов
+    doc_tasks = []
+    for doc_name, doc_url in REFERENCE_DOCS.items():
+        if doc_url:
+            doc_tasks.append(get_cached_document(doc_name, doc_url))
+    
+    # Ждем завершения всех загрузок
+    all_tasks = csv_tasks + doc_tasks
+    if all_tasks:
+        results = await asyncio.gather(*all_tasks, return_exceptions=True)
+        
+        # Подсчитываем успешные загрузки
+        csv_success = sum(1 for i, r in enumerate(results[:len(csv_tasks)]) 
+                         if not isinstance(r, Exception) and r)
+        doc_success = sum(1 for i, r in enumerate(results[len(csv_tasks):]) 
+                         if not isinstance(r, Exception) and r)
+        
+        logger.info(f"✅ Прогрев завершен: {csv_success}/{len(csv_tasks)} CSV, "
+                   f"{doc_success}/{len(doc_tasks)} документов")
+        
+        # Выводим статистику индексов
+        total_tp_indexed = sum(len(idx.get('tp_index', {})) 
+                              for idx in csv_index_cache.values())
+        logger.info(f"📊 Проиндексировано {total_tp_indexed} уникальных ТП")
 
 # ==================== НАСТРОЙКА ВЕБХУКА ====================
 
@@ -4018,16 +3723,11 @@ async def setup_webhook(application: Application, webhook_url: str):
 async def init_and_start():
     """Инициализация и запуск фоновых задач"""
     logger.info("=" * 60)
-    logger.info(f"🚀 ЗАПУСК БОТА ВОЛС АССИСТЕНТ v{BOT_VERSION}")
+    logger.info(f"🚀 ЗАПУСК БОТА ВОЛС АССИСТЕНТ v{BOT_VERSION} OPTIMIZED")
     logger.info("=" * 60)
     
-    # Загружаем документы
-    logger.info("📄 Начинаем предзагрузку документов...")
-    await preload_documents()
-    
-    # Загружаем CSV файлы
-    logger.info("📊 Начинаем предзагрузку CSV файлов...")
-    await preload_csv_files()
+    # Прогрев кэша - загружаем и индексируем все данные
+    await warm_up_cache()
     
     # Выводим статистику
     logger.info("=" * 60)
@@ -4036,6 +3736,7 @@ async def init_and_start():
     logger.info(f"🔄 Пользователей запускавших бота: {len(bot_users)}")
     logger.info(f"📁 CSV файлов в кэше: {len(csv_cache)}")
     logger.info(f"📄 Документов в кэше: {len(documents_cache)}")
+    logger.info(f"🔍 Проиндексированных файлов: {len(csv_index_cache)}")
     logger.info("=" * 60)
     
     # Запускаем фоновые задачи
