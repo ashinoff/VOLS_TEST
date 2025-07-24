@@ -458,8 +458,6 @@ async def preload_csv_files():
 
 # чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
 
-# чАСТЬ 3== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================================================================================================================================
-
 def get_moscow_time():
     """Получить текущее время в Москве"""
     return datetime.now(MOSCOW_TZ)
@@ -831,8 +829,9 @@ def escape_markdown(text: str) -> str:
     if not text:
         return text
     
-    # Символы, которые нужно экранировать в Markdown
-    special_chars = ['*', '_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    # Символы, которые ДЕЙСТВИТЕЛЬНО нужно экранировать в Markdown v1
+    # Убираем из списка точки, скобки, плюсы и минусы - они редко создают проблемы
+    special_chars = ['*', '_', '[', ']', '`', '~']
     
     escaped_text = text
     for char in special_chars:
@@ -857,9 +856,9 @@ def format_contractor_info(contractor_data: Dict) -> str:
     if email1 or email2:
         lines.append("📧 **Email:**")
         if email1:
-            lines.append(f"   • {escape_markdown(email1)}")
+            lines.append(f"   • {email1}")  # НЕ экранируем email
         if email2:
-            lines.append(f"   • {escape_markdown(email2)}")
+            lines.append(f"   • {email2}")  # НЕ экранируем email
         lines.append("")
     
     # Первое контактное лицо
@@ -876,7 +875,7 @@ def format_contractor_info(contractor_data: Dict) -> str:
         if phone1:
             # Форматируем телефон для удобства
             phone1_formatted = format_phone_number(phone1)
-            lines.append(f"   • Телефон: {escape_markdown(phone1_formatted)}")
+            lines.append(f"   • Телефон: {phone1_formatted}")  # НЕ экранируем телефон
         lines.append("")
     
     # Второе контактное лицо
@@ -893,7 +892,7 @@ def format_contractor_info(contractor_data: Dict) -> str:
         if phone2:
             # Форматируем телефон для удобства
             phone2_formatted = format_phone_number(phone2)
-            lines.append(f"   • Телефон: {escape_markdown(phone2_formatted)}")
+            lines.append(f"   • Телефон: {phone2_formatted}")  # НЕ экранируем телефон
     
     # Если нет никакой информации кроме названия
     if len(lines) == 2:  # Только название и пустая строка
