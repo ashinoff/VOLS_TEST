@@ -2773,9 +2773,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
             
-            # ... код поиска ТП ...
+            # Ищем в структуре сети (справочник SP)
+            env_key = get_env_key_for_branch(branch, network, is_reference=True)
+            csv_url = os.environ.get(env_key)
             
-        elif action == 'select_notification_tp':  # <-- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ НА УРОВНЕ С if action == 'notification_tp':
+            if not csv_url:
+                await update.message.reply_text(f"❌ Справочник для филиала {branch} не найден")
+                return
+            
+            loading_msg = await update.message.reply_text("🔍 Ищу ТП в структуре сети...")
+            
+            data = load_csv_from_url(csv_url)
+            results = search_tp_in_data(text, data, 'Наименование ТП')
+            
+            # Фильтруем по РЭС если у пользователя ограничения
+            user_permissions = get_user_permissions(user_id)
+            user_res = user_permissions.get('res')
+            
+            if user_res and user_res != 'All':
+                results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+            
+            await loading_msg.delete()
+            
+            if not results:
+                await update.message.reply_text("❌ ТП не найдена в справочнике структуры сети")
+                return
+            
+            # ВАЖНО: Получаем ВСЕ уникальные ТП
+            tp_list = list(set([r['Наименование ТП'] for r in results]))
+            
+            if len(tp_list) == 1:
+                # Если найдена одна ТП
+                user_states[user_id]['notification_results'] = results
+                user_states[user_id]['action'] = 'select_notification_tp'
+                
+                reply_markup = get_tp_selection_keyboard(tp_list)
+                
+                await update.message.reply_text(
+                    f"✅ Найдена 1 ТП в структуре сети. Подтвердите выбор:",
+                    reply_markup=reply_markup
+                )
+            else:
+                # Если найдено несколько ТП
+                user_states[user_id]['notification_results'] = results
+                user_states[user_id]['action'] = 'select_notification_tp'
+                
+                reply_markup = get_tp_selection_keyboard(tp_list)
+                
+                await update.message.reply_text(
+                    f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
+                    reply_markup=reply_markup
+                )
+        
+        elif action == 'select_notification_tp':
             # Выбор ТП из списка
             results = user_states[user_id].get('notification_results', [])
             
@@ -2812,9 +2862,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_permissions = get_user_permissions(user_id)
                 user_res = user_permissions.get('res')
                 if user_res and user_res != 'All':
-                    tp_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
+                    # ИСПРАВЛЕНО: Фильтруем tp_results, а не results!
+                    tp_results = [r for r in tp_results if r.get('РЭС', '').strip() == user_res]
                 
                 logger.info(f"[select_notification_tp] Точный поиск для '{text}' нашел {len(tp_results)} записей")
+                
+                # ДОБАВЛЕНО: Логирование для отладки
+                if tp_results:
+                    vl_names = [r.get('Наименование ВЛ', '') for r in tp_results]
+                    unique_vl = list(set(vl_names))
+                    logger.info(f"[select_notification_tp] Всего записей: {len(tp_results)}, уникальных ВЛ: {len(unique_vl)}")
+                    logger.info(f"[select_notification_tp] Примеры ВЛ: {unique_vl[:5]}")
+                    
             else:
                 # Если не удалось загрузить - используем исходные результаты
                 tp_results = [r for r in results if r['Наименование ТП'] == text]
@@ -2832,13 +2891,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 vl_list.sort()
                 
                 logger.info(f"[select_notification_tp] Найдено {len(vl_list)} уникальных ВЛ")
+                logger.info(f"[select_notification_tp] ВЛ: {vl_list[:10]}...")  # Показываем первые 10 для отладки
                 
                 # Используем функцию для создания клавиатуры
                 reply_markup = get_vl_selection_keyboard(vl_list, original_tp_name)
                 
                 await update.message.reply_text(
                     f"📨 Отправка уведомления по ТП: {original_tp_name}\n"
-                    f"📊 Найдено ВЛ: {len(vl_list)}\n\n"
+                    f"📊 Найдено записей: {len(tp_results)}\n"
+                    f"⚡ Уникальных ВЛ: {len(vl_list)}\n\n"
                     f"Выберите ВЛ:",
                     reply_markup=reply_markup
                 )
