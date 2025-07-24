@@ -2767,7 +2767,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ==================== ОБРАБОТКА ОТПРАВКИ УВЕДОМЛЕНИЙ ====================
     # Отправка уведомлений
-     elif action == 'select_notification_tp':
+    elif state == 'send_notification':
+        if action == 'notification_tp':
+            # Поиск ТП для уведомления
+            branch = user_states[user_id].get('branch')
+            network = user_states[user_id].get('network')
+            
+            # ... код поиска ТП ...
+            
+        elif action == 'select_notification_tp':  # <-- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ НА УРОВНЕ С if action == 'notification_tp':
             # Выбор ТП из списка
             results = user_states[user_id].get('notification_results', [])
             
@@ -2804,7 +2812,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_permissions = get_user_permissions(user_id)
                 user_res = user_permissions.get('res')
                 if user_res and user_res != 'All':
-                    tp_results = [r for r in tp_results if r.get('РЭС', '').strip() == user_res]
+                    tp_results = [r for r in results if r.get('РЭС', '').strip() == user_res]
                 
                 logger.info(f"[select_notification_tp] Точный поиск для '{text}' нашел {len(tp_results)} записей")
             else:
