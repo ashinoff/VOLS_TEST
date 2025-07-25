@@ -173,7 +173,7 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
     query_digit_parts = re.findall(r'\d+', query_compact)
     
     results = []
-    seen_tp = set()  # Для избежания дубликатов
+    # ИСПРАВЛЕНО: Убрали seen_tp - больше не фильтруем дубликаты!
     
     for row in data:
         tp_name_original = row.get(column, '')
@@ -194,37 +194,28 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
         
         # 1. Точное совпадение (с учетом дефисов)
         if normalized_query == normalized_tp:
-            if tp_name_original not in seen_tp:
-                results.append(row)
-                seen_tp.add(tp_name_original)
+            # ИСПРАВЛЕНО: убрали проверку seen_tp
+            results.append(row)
             continue
         
         # 2. Точное совпадение без дефисов
         if query_compact == tp_compact:
-            if tp_name_original not in seen_tp:
-                results.append(row)
-                seen_tp.add(tp_name_original)
+            results.append(row)
             continue
         
         # 3. НОВОЕ: Совпадение упрощенных версий для кабельных линий
         if query_simplified and tp_simplified and query_simplified in tp_simplified:
-            if tp_name_original not in seen_tp:
-                results.append(row)
-                seen_tp.add(tp_name_original)
+            results.append(row)
             continue
         
         # 4. Поиск вхождения компактной версии
         if len(query_compact) >= 4 and query_compact in tp_compact:
-            if tp_name_original not in seen_tp:
-                results.append(row)
-                seen_tp.add(tp_name_original)
+            results.append(row)
             continue
         
         # 5. НОВОЕ: Поиск ключевых слов для кабельных линий
         if is_cable_line_match(normalized_query, normalized_tp):
-            if tp_name_original not in seen_tp:
-                results.append(row)
-                seen_tp.add(tp_name_original)
+            results.append(row)
             continue
         
         # 6. Гибкий поиск по частям (существующая логика)
@@ -290,9 +281,9 @@ def search_tp_in_data_advanced(tp_query: str, data: List[Dict], column: str) -> 
             if digit_found:
                 match_found = True
         
-        if match_found and tp_name_original not in seen_tp:
+        # ИСПРАВЛЕНО: убрали проверку seen_tp
+        if match_found:
             results.append(row)
-            seen_tp.add(tp_name_original)
     
     logger.info(f"[search_tp_in_data_advanced] Запрос: '{tp_query}', найдено записей: {len(results)}")
     return results
@@ -542,6 +533,8 @@ async def preload_csv_files():
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.error(f"❌ Ошибка загрузки {csv_urls[i]}: {result}")
+
+# чАСТЬ 2 КОНЕЦ    ==================================================================================================================================================
 
 
 
