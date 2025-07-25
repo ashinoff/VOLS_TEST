@@ -1944,9 +1944,8 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ПОКАЗ РЕЗУЛЬТАТОВ ПОИСКА ====================
 
-async def show_tp_results(update: Update, results: List[Dict], tp_name: str, search_query: str = None):
-    """Показать результаты поиска по ТП
-    ИСПРАВЛЕНО: Теперь показывает ВСЕ ВЛ и ВСЕ записи для каждой ВЛ!"""
+sync def show_tp_results(update: Update, results: List[Dict], tp_name: str, search_query: str = None):
+    """Показать результаты поиска по ТП - ПОКАЗЫВАЕТ ВСЕ ЗАПИСИ БЕЗ ГРУППИРОВКИ"""
     if not results:
         await update.message.reply_text("❌ Результаты не найдены")
         return
@@ -1963,74 +1962,44 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
     
     res_name = results[0].get('РЭС', 'Неизвестный')
     
-    # Группируем результаты по ВЛ
-    vl_groups = {}
-    for result in results:
-        vl = result.get('Наименование ВЛ', '-')
-        if vl not in vl_groups:
-            vl_groups[vl] = []
-        vl_groups[vl].append(result)
-    
-    logger.info(f"[show_tp_results] Найдено уникальных ВЛ: {len(vl_groups)}")
-    logger.info(f"[show_tp_results] ВЛ: {list(vl_groups.keys())}")
-    
     # Формируем заголовок сообщения
-    message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n"
-    message += f"🔌 Уникальных ВЛ: {len(vl_groups)}\n\n"
+    message = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
     
-    # Формируем сообщение по группам ВЛ
-    for vl, vl_results in sorted(vl_groups.items()):
-        message += f"⚡ **ВЛ: {vl}**\n"
+    # ИЗМЕНЕНО: Показываем ВСЕ записи без группировки
+    for i, result in enumerate(results, 1):
+        vl = result.get('Наименование ВЛ', '-')
+        supports = result.get('Опоры', '-')
+        supports_count = result.get('Количество опор', '-')
+        provider = result.get('Наименование Провайдера', '-')
         
-        # ВАЖНО: Показываем ВСЕ записи для этой ВЛ
-        if len(vl_results) > 1:
-            # Если несколько записей - нумеруем их
-            for i, result in enumerate(vl_results, 1):
-                supports = result.get('Опоры', '-')
-                supports_count = result.get('Количество опор', '-')
-                provider = result.get('Наименование Провайдера', '-')
-                message += f"  {i}. Опоры: {supports}, Кол-во: {supports_count}\n"
-                message += f"     Контрагент: {provider}\n"
-        else:
-            # Если одна запись - показываем без нумерации
-            result = vl_results[0]
-            supports = result.get('Опоры', '-')
-            supports_count = result.get('Количество опор', '-')
-            provider = result.get('Наименование Провайдера', '-')
-            message += f"Опоры: {supports}, Количество опор: {supports_count}\n"
-            message += f"Контрагент: {provider}\n"
-        
-        message += "\n"
+        message += f"{i}. ⚡ **ВЛ: {vl}**\n"
+        message += f"   Опоры: {supports}, Кол-во: {supports_count}\n"
+        message += f"   Контрагент: {provider}\n\n"
     
     # Разбиваем на части если сообщение слишком длинное
     if len(message) > 4000:
         # Первое сообщение с заголовком
-        header = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n"
-        header += f"🔌 Уникальных ВЛ: {len(vl_groups)}\n\n"
+        header = f"📍 {res_name} РЭС, на {tp_name} найдено {len(results)} ВОЛС с договором аренды.\n\n"
         
         parts = []
         current_part = ""
         
-        for vl, vl_results in sorted(vl_groups.items()):
-            vl_text = f"⚡ **ВЛ: {vl}**\n"
+        for i, result in enumerate(results, 1):
+            vl = result.get('Наименование ВЛ', '-')
+            supports = result.get('Опоры', '-')
+            supports_count = result.get('Количество опор', '-')
+            provider = result.get('Наименование Провайдера', '-')
             
-            if len(vl_results) > 1:
-                for i, result in enumerate(vl_results, 1):
-                    vl_text += f"  {i}. Опоры: {result.get('Опоры', '-')}, Кол-во: {result.get('Количество опор', '-')}\n"
-                    vl_text += f"     Контрагент: {result.get('Наименование Провайдера', '-')}\n"
-            else:
-                result = vl_results[0]
-                vl_text += f"Опоры: {result.get('Опоры', '-')}, Количество опор: {result.get('Количество опор', '-')}\n"
-                vl_text += f"Контрагент: {result.get('Наименование Провайдера', '-')}\n"
-            
-            vl_text += "\n"
+            record_text = f"{i}. ⚡ **ВЛ: {vl}**\n"
+            record_text += f"   Опоры: {supports}, Кол-во: {supports_count}\n"
+            record_text += f"   Контрагент: {provider}\n\n"
             
             # Проверяем, поместится ли в текущую часть
-            if len(current_part + vl_text) > 3500:
+            if len(current_part + record_text) > 3500:
                 parts.append(current_part)
-                current_part = vl_text
+                current_part = record_text
             else:
-                current_part += vl_text
+                current_part += record_text
         
         if current_part:
             parts.append(current_part)
@@ -2044,7 +2013,6 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
     else:
         await update.message.reply_text(message, parse_mode='Markdown')
     
-    # Используем сохраненный поисковый запрос для кнопки
     # Проверяем, откуда пришли - из двойного поиска или обычного
     if 'dual_search_results' in user_states[user_id]:
         # Пришли из двойного поиска - показываем специальную клавиатуру
@@ -2060,11 +2028,7 @@ async def show_tp_results(update: Update, results: List[Dict], tp_name: str, sea
         )
         #ЧАСТЬ 5.2 КОНЕЦ= ОБРАБОТЧИК СООБЩЕНИЙ ================================================================================================
 
-# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
 
-# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
-
-# ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
 
 # ===ЧАСТЬ 5.3=== ОБРАБОТЧИК СООБЩЕНИЙ ========================================================================================================
 
