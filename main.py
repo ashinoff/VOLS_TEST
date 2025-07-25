@@ -1944,7 +1944,7 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ПОКАЗ РЕЗУЛЬТАТОВ ПОИСКА ====================
 
-sync def show_tp_results(update: Update, results: List[Dict], tp_name: str, search_query: str = None):
+async def show_tp_results(update: Update, results: List[Dict], tp_name: str, search_query: str = None):
     """Показать результаты поиска по ТП - ПОКАЗЫВАЕТ ВСЕ ЗАПИСИ БЕЗ ГРУППИРОВКИ"""
     if not results:
         await update.message.reply_text("❌ Результаты не найдены")
