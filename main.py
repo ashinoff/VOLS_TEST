@@ -2880,7 +2880,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == 'select_vl':
             # ВАЖНЕЙШИЙ БЛОК - ОБРАБОТКА ВЫБОРА ВЛ!
             if text == '🔍 Новый поиск':
-                elif text == '⬅️ Вернуться к результатам поиска':
+            elif text == '⬅️ Вернуться к результатам поиска':
                 user_states[user_id]['state'] = 'search_tp'
                 user_states[user_id]['action'] = 'search'
                 await update.message.reply_text(
