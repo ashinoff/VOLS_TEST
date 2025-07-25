@@ -2879,15 +2879,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif action == 'select_vl':
             # ВАЖНЕЙШИЙ БЛОК - ОБРАБОТКА ВЫБОРА ВЛ!
-            if text == '🔍 Новый поиск':
-            elif text == '⬅️ Вернуться к результатам поиска':
-                user_states[user_id]['state'] = 'search_tp'
-                user_states[user_id]['action'] = 'search'
-                await update.message.reply_text(
-                    "🔍 Введите наименование ТП для поиска:",
-                    reply_markup=get_search_keyboard()
-                )
-            else:
+    if text == '🔍 Новый поиск':
+        user_states[user_id]['state'] = 'search_tp'
+        user_states[user_id]['action'] = 'search'
+        await update.message.reply_text(
+            "🔍 Введите наименование ТП для поиска:",
+            reply_markup=get_search_keyboard()
+        )
+    elif text == '⬅️ Вернуться к результатам поиска':
+        dual_results = user_states[user_id].get('dual_search_results', {})
+        if dual_results:
+            registry_tp_names = dual_results['registry_tp_names']
+            structure_tp_names = dual_results['structure_tp_names']
+            search_query = user_states[user_id].get('last_search_query', '')
+            
+            # Возвращаемся в состояние поиска
+            user_states[user_id]['state'] = 'search_tp'
+            user_states[user_id]['action'] = 'dual_search'
+            
+            message = f"🔍 Результаты поиска по запросу: **{search_query}**\n\n"
+            
+            if registry_tp_names:
+                message += f"📋 **Реестр договоров** (найдено {len(dual_results['registry'])} записей)\n"
+                message += f"   ТП: {len(registry_tp_names)} шт.\n\n"
+            
+            if structure_tp_names:
+                message += f"🗂️ **Структура сети** (найдено {len(dual_results['structure'])} записей)\n"
+                message += f"   ТП: {len(structure_tp_names)} шт.\n\n"
+            
+            message += "📌 Выберите ТП:\n"
+            message += "• Слева (📄) - просмотр договоров\n"
+            message += "• Справа (📍) - отправка уведомления"
+            
+            await update.message.reply_text(
+                message,
+                reply_markup=get_dual_search_keyboard(registry_tp_names, structure_tp_names),
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text("❌ Результаты поиска не найдены")
+    else:
                 # Выбрана конкретная ВЛ
                 selected_tp = user_states[user_id].get('selected_tp')
                 
