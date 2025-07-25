@@ -1310,14 +1310,19 @@ def get_tp_selection_keyboard(tp_list: List[str]) -> ReplyKeyboardMarkup:
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для выбора ВЛ
-def get_vl_selection_keyboard(vl_list: List[str], tp_name: str) -> ReplyKeyboardMarkup:
+# ВАЖНАЯ ФУНКЦИЯ! Клавиатура для выбора ВЛ - ОБНОВЛЕНА С ПАРАМЕТРОМ from_dual_search
+def get_vl_selection_keyboard(vl_list: List[str], tp_name: str, from_dual_search: bool = False) -> ReplyKeyboardMarkup:
     """Клавиатура для выбора ВЛ с ограничением количества"""
     keyboard = []
     
-    # Ограничиваем количество ВЛ (учитываем навигационную строку и кнопку поиска)
-    vl_truncated = len(vl_list) > MAX_BUTTONS_BEFORE_BACK - 2  # -2 для навигации и поиска
-    vl_display = vl_list[:MAX_BUTTONS_BEFORE_BACK - 2]
+    # Ограничиваем количество ВЛ 
+    if from_dual_search:
+        # Если есть кнопка возврата к результатам - учитываем её
+        vl_truncated = len(vl_list) > MAX_BUTTONS_BEFORE_BACK - 3  # -3 для навигации, поиска и возврата
+        vl_display = vl_list[:MAX_BUTTONS_BEFORE_BACK - 3]
+    else:
+        vl_truncated = len(vl_list) > MAX_BUTTONS_BEFORE_BACK - 2  # -2 для навигации и поиска
+        vl_display = vl_list[:MAX_BUTTONS_BEFORE_BACK - 2]
     
     logger.info(f"[get_vl_selection_keyboard] Создаю клавиатуру для {len(vl_list)} ВЛ на ТП {tp_name} (показано: {len(vl_display)})")
     
@@ -1331,6 +1336,10 @@ def get_vl_selection_keyboard(vl_list: List[str], tp_name: str) -> ReplyKeyboard
     # Добавляем ВЛ как кнопки
     for vl in vl_display_sorted:
         keyboard.append([vl])
+    
+    # НОВОЕ: Если пришли из двойного поиска - добавляем кнопку возврата
+    if from_dual_search:
+        keyboard.append(['⬅️ Вернуться к результатам поиска'])
     
     keyboard.append(['🔍 Новый поиск'])
     keyboard.append(['⬅️ Назад', '🏠 Главная', '🔄 Рестарт'])
@@ -1433,6 +1442,7 @@ def get_contractor_actions_keyboard() -> ReplyKeyboardMarkup:
 
 
  
+    #чАСТЬ 4 КОНЕЦ ==============================================================================================================================================
     #чАСТЬ 4 КОНЕЦ ==============================================================================================================================================
  # ЧАСТЬ 5.1 ========= EMAIL ФУНКЦИИ ============================================================================================================================
 
@@ -1906,7 +1916,8 @@ async def send_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"[send_notification] ВЛ: {vl_list}")
             
             # Используем новую функцию для создания клавиатуры
-            reply_markup = get_vl_selection_keyboard(vl_list, selected_tp)
+            from_dual_search = user_states[user_id].get('from_dual_search', False) 
+            reply_markup = get_vl_selection_keyboard(vl_list, selected_tp, from_dual_search)
             
             await update.message.reply_text(
                 result_text + f"\n\n✨ Можете отправить еще уведомление по этой же ТП:\n📍 ТП: {selected_tp}\n\nВыберите ВЛ:",
@@ -2384,9 +2395,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                         logger.info(f"[handle_message] Уникальных ВЛ найдено: {len(vl_list)}")
                         logger.info(f"[handle_message] ВЛ: {vl_list}")
+                        user_states[user_id]['from_dual_search'] = True
                         
                         # Используем функцию для создания клавиатуры
-                        reply_markup = get_vl_selection_keyboard(vl_list, full_tp_name)
+                        reply_markup = get_vl_selection_keyboard(vl_list, full_tp_name, from_dual_search=True)
                         
                         await update.message.reply_text(
                             f"📨 Отправка уведомления по ТП: {full_tp_name}\n"
@@ -2590,7 +2602,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             logger.info(f"[handle_message] При возврате назад найдено {len(vl_list)} ВЛ")
                             
                             # Используем функцию для создания клавиатуры
-                            reply_markup = get_vl_selection_keyboard(vl_list, selected_tp)
+                            from_dual_search = user_states[user_id].get('from_dual_search', False) 
+                            reply_markup = get_vl_selection_keyboard(vl_list, selected_tp, from_dual_search)
                             
                             await update.message.reply_text(
                                 f"📨 Отправка уведомления по ТП: {selected_tp}\n"
@@ -2675,7 +2688,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             vl_list = list(set([r['Наименование ВЛ'] for r in results]))
                             vl_list.sort()
                             
-                            reply_markup = get_vl_selection_keyboard(vl_list, selected_tp)
+                            from_dual_search = user_states[user_id].get('from_dual_search', False) 
+                            reply_markup = get_vl_selection_keyboard(vl_list, selected_tp, from_dual_search)
                             
                             await update.message.reply_text(
                                 f"📨 Отправка уведомления по ТП: {selected_tp}\n"
@@ -2866,6 +2880,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == 'select_vl':
             # ВАЖНЕЙШИЙ БЛОК - ОБРАБОТКА ВЫБОРА ВЛ!
             if text == '🔍 Новый поиск':
+                elif text == '⬅️ Вернуться к результатам поиска':
                 user_states[user_id]['state'] = 'search_tp'
                 user_states[user_id]['action'] = 'search'
                 await update.message.reply_text(
