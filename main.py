@@ -2756,7 +2756,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ==================== ОБРАБОТКА ОТПРАВКИ УВЕДОМЛЕНИЙ ====================
     # Отправка уведомлений
     elif state == 'send_notification':
-        if action == 'notification_tp':
+        Братан, извини! Вижу проблему - ВСЕ эти строки должны иметь отступы! Этот код находится внутри блока if action == 'notification_tp':, поэтому всё должно быть сдвинуто вправо.
+Вот как должно быть с правильными отступами:
+python        if action == 'notification_tp':
             # Поиск ТП для уведомления
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
@@ -2788,47 +2790,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             # ВАЖНО: Получаем ВСЕ уникальные ТП
-tp_list = list(set([r['Наименование ТП'] for r in results]))
-# ДОБАВЛЕНО: Сортируем с приоритетом точных совпадений
-def sort_tp_priority(tp_name):
-    # Нормализуем для сравнения
-    tp_normalized = normalize_tp_name_advanced(tp_name)
-    query_normalized = normalize_tp_name_advanced(text)
-    
-    # Точное совпадение - приоритет 0
-    if tp_normalized == query_normalized:
-        return (0, tp_name)
-    # Начинается с запроса - приоритет 1
-    elif tp_normalized.startswith(query_normalized):
-        return (1, tp_name)
-    # Содержит запрос - приоритет 2
-    else:
-        return (2, tp_name)
-
-tp_list.sort(key=sort_tp_priority)
-
-if len(tp_list) == 1:
-    # Если найдена одна ТП
-    user_states[user_id]['notification_results'] = results
-    user_states[user_id]['action'] = 'select_notification_tp'
-    
-    reply_markup = get_tp_selection_keyboard(tp_list)
-    
-    await update.message.reply_text(
-        f"✅ Найдена 1 ТП в структуре сети. Подтвердите выбор:",
-        reply_markup=reply_markup
-    )
-else:
-    # Если найдено несколько ТП
-    user_states[user_id]['notification_results'] = results
-    user_states[user_id]['action'] = 'select_notification_tp'
-    
-    reply_markup = get_tp_selection_keyboard(tp_list)
-    
-    await update.message.reply_text(
-        f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
-        reply_markup=reply_markup
-    )
+            tp_list = list(set([r['Наименование ТП'] for r in results]))
+            
+            # ДОБАВЛЕНО: Сортируем с приоритетом точных совпадений
+            def sort_tp_priority(tp_name):
+                # Нормализуем для сравнения
+                tp_normalized = normalize_tp_name_advanced(tp_name)
+                query_normalized = normalize_tp_name_advanced(text)
+                
+                # Точное совпадение - приоритет 0
+                if tp_normalized == query_normalized:
+                    return (0, tp_name)
+                # Начинается с запроса - приоритет 1
+                elif tp_normalized.startswith(query_normalized):
+                    return (1, tp_name)
+                # Содержит запрос - приоритет 2
+                else:
+                    return (2, tp_name)
+            
+            tp_list.sort(key=sort_tp_priority)
+            
+            if len(tp_list) == 1:
+                # Если найдена одна ТП
+                user_states[user_id]['notification_results'] = results
+                user_states[user_id]['action'] = 'select_notification_tp'
+                
+                reply_markup = get_tp_selection_keyboard(tp_list)
+                
+                await update.message.reply_text(
+                    f"✅ Найдена 1 ТП в структуре сети. Подтвердите выбор:",
+                    reply_markup=reply_markup
+                )
+            else:
+                # Если найдено несколько ТП
+                user_states[user_id]['notification_results'] = results
+                user_states[user_id]['action'] = 'select_notification_tp'
+                
+                reply_markup = get_tp_selection_keyboard(tp_list)
+                
+                await update.message.reply_text(
+                    f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
+                    reply_markup=reply_markup
+                )
             else:
                 # Если найдено несколько ТП
                 user_states[user_id]['notification_results'] = results
