@@ -2818,7 +2818,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ Найдена 1 ТП в структуре сети. Подтвердите выбор:",
                     reply_markup=reply_markup
                 )
-            else:
+        else:
                 # Если найдено несколько ТП
                 user_states[user_id]['notification_results'] = results
                 user_states[user_id]['action'] = 'select_notification_tp'
