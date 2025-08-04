@@ -2328,10 +2328,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Находим полное название ТП
                 full_tp_name = None
+                # Сначала ищем точное совпадение
                 for tp_name in registry_tp_names:
-                    if tp_name.startswith(tp_display_name) or tp_display_name in tp_name:
+                    if tp_name == tp_display_name or (tp_display_name.endswith('...') and tp_name.startswith(tp_display_name[:-3])):
                         full_tp_name = tp_name
                         break
+
+                # Если точного совпадения нет - ищем первое подходящее
+                    if not full_tp_name:
+                        for tp_name in registry_tp_names:
+                            if tp_name.startswith(tp_display_name) or tp_display_name in tp_name:
+                                full_tp_name = tp_name
+                                break
                 
                 if full_tp_name:
                     # Фильтруем результаты по найденной ТП
@@ -2349,11 +2357,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 structure_tp_names = dual_results.get('structure_tp_names', [])
                 
                 # Находим полное название ТП
+                
                 full_tp_name = None
+                # Сначала ищем точное совпадение
                 for tp_name in structure_tp_names:
-                    if tp_name.startswith(tp_display_name) or tp_display_name in tp_name:
+                    if tp_name == tp_display_name or (tp_display_name.endswith('...') and tp_name.startswith(tp_display_name[:-3])):
                         full_tp_name = tp_name
                         break
+
+                # Если точного совпадения нет - ищем первое подходящее
+                if not full_tp_name:
+                    for tp_name in structure_tp_names:
+                        if tp_name.startswith(tp_display_name) or tp_display_name in tp_name:
+                            full_tp_name = tp_name
+                            break
                 
                 if full_tp_name:
                     # ВАЖНО: Делаем точный поиск для получения ВСЕХ записей
@@ -2772,6 +2789,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # ВАЖНО: Получаем ВСЕ уникальные ТП
             tp_list = list(set([r['Наименование ТП'] for r in results]))
+            # ДОБАВЛЕНО: Сортируем с приоритетом точных совпадений
+            def sort_tp_priority(tp_name):
+                # Нормализуем для сравнения
+                tp_normalized = normalize_tp_name_advanced(tp_name)
+                query_normalized = normalize_tp_name_advanced(tp_query)
+    
+            # Точное совпадение - приоритет 0
+            if tp_normalized == query_normalized:
+                return (0, tp_name)
+            # Начинается с запроса - приоритет 1
+            elif tp_normalized.startswith(query_normalized):
+                return (1, tp_name)
+            # Содержит запрос - приоритет 2
+            else:
+                return (2, tp_name)
+
+        tp_list.sort(key=sort_tp_priority)
+
             
             if len(tp_list) == 1:
                 # Если найдена одна ТП
