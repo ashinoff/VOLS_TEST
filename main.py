@@ -2806,9 +2806,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return (2, tp_name)
 
         tp_list.sort(key=sort_tp_priority)
-
-            
-            if len(tp_list) == 1:
+        
+        if len(tp_list) == 1:
                 # Если найдена одна ТП
                 user_states[user_id]['notification_results'] = results
                 user_states[user_id]['action'] = 'select_notification_tp'
