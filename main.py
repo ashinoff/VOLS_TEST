@@ -2830,17 +2830,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
                     reply_markup=reply_markup
                 )
-            else:
-                # Если найдено несколько ТП
-                user_states[user_id]['notification_results'] = results
-                user_states[user_id]['action'] = 'select_notification_tp'
-                
-                reply_markup = get_tp_selection_keyboard(tp_list)
-                
-                await update.message.reply_text(
-                    f"✅ Найдено {len(tp_list)} ТП. Выберите нужную:",
-                    reply_markup=reply_markup
-                )
         
         elif action == 'select_notification_tp':
             # Выбор ТП из списка
