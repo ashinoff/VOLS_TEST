@@ -2756,9 +2756,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ==================== ОБРАБОТКА ОТПРАВКИ УВЕДОМЛЕНИЙ ====================
     # Отправка уведомлений
     elif state == 'send_notification':
-        Братан, извини! Вижу проблему - ВСЕ эти строки должны иметь отступы! Этот код находится внутри блока if action == 'notification_tp':, поэтому всё должно быть сдвинуто вправо.
-Вот как должно быть с правильными отступами:
-python        if action == 'notification_tp':
+        if action == 'notification_tp':
             # Поиск ТП для уведомления
             branch = user_states[user_id].get('branch')
             network = user_states[user_id].get('network')
